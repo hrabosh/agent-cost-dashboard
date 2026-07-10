@@ -2,6 +2,8 @@
 import os
 import json
 import argparse
+import re
+import sys
 
 from typing import TypedDict
 from glob import glob
@@ -35,6 +37,26 @@ COST_MAP: dict[str, Cost] = {
         "cache_read": 0.5,
         "cache_write": 6.25,
     },
+    # Opus 4.6/4.7/4.8 are priced at the same $5/$25 tier as 4.5 — kept in
+    # sync with MANUAL_PRICING in cost_dashboard.py.
+    "claude-opus-4-6": {
+        "input": 5,
+        "output": 25,
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+    },
+    "claude-opus-4-7": {
+        "input": 5,
+        "output": 25,
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+    },
+    "claude-opus-4-8": {
+        "input": 5,
+        "output": 25,
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+    },
     "claude-haiku-4-5-20251001": {
         "input": 1,
         "output": 5,
@@ -47,19 +69,60 @@ COST_MAP: dict[str, Cost] = {
         "cache_read": 0.3,
         "cache_write": 3.75,
     },
+    "claude-sonnet-4-5-20250929": {
+        "input": 3,
+        "output": 15,
+        "cache_read": 0.3,
+        "cache_write": 3.75,
+    },
+    # Sonnet has held $3/$15 across 4/4.5/5 so far; verify against Anthropic's
+    # published pricing if that changes for a future Sonnet release.
+    "claude-sonnet-5": {
+        "input": 3,
+        "output": 15,
+        "cache_read": 0.3,
+        "cache_write": 3.75,
+    },
+    # Kept in sync with MANUAL_PRICING in cost_dashboard.py — update both when
+    # a price changes.
     "glm-4.7": {
-        "input": 0.39999999999999997,
-        "output": 1.0,
+        "input": 0.38,
+        "output": 1.74,
         "cache_read": 0.0,
         "cache_write": 0.0,
     },
     "glm-4.5-air": {
-        "input": 0.2,
-        "output": 1.1,
-        "cache_read": 0.03,
+        "input": 0.13,
+        "output": 0.85,
+        "cache_read": 0.025,
         "cache_write": 0.0,
     },
 }
+
+
+def _normalize_model_name(name: str) -> str:
+    """Strip a trailing YYYYMMDD date stamp and lowercase for fuzzy matching."""
+    return re.sub(r"-\d{8}$", "", name.lower())
+
+
+def match_cost(model: str) -> Cost | None:
+    """Look up pricing for a model, falling back to the longest matching
+    known model family (date-stamp-agnostic) instead of requiring an exact
+    match — an unrecognized dated snapshot of a known model family (e.g. a
+    new Sonnet release) should still get priced rather than aborting the
+    whole run."""
+    if model in COST_MAP:
+        return COST_MAP[model]
+    norm_model = _normalize_model_name(model)
+    best_pattern = None
+    for pattern in COST_MAP:
+        norm_pattern = _normalize_model_name(pattern)
+        if norm_pattern in norm_model or norm_model in norm_pattern:
+            if best_pattern is None or len(norm_pattern) > len(
+                _normalize_model_name(best_pattern)
+            ):
+                best_pattern = pattern
+    return COST_MAP[best_pattern] if best_pattern else None
 
 
 def session_cost(path: str) -> tuple[int, float]:
@@ -71,17 +134,24 @@ def session_cost(path: str) -> tuple[int, float]:
             message: dict = data.get("message", {})
             usage: Usage = message.get("usage", {})
             if usage:
-                input = usage["input_tokens"]
-                output = usage["output_tokens"]
-                cache_read = usage["cache_read_input_tokens"]
+                input = usage.get("input_tokens", 0)
+                output = usage.get("output_tokens", 0)
+                cache_read = usage.get("cache_read_input_tokens", 0)
                 cache_write = usage.get("cache_creation_input_tokens", 0)
                 total = input + output + cache_read + cache_write
                 model = message.get("model", "")
                 assert model, "missing model"
                 if model == "<synthetic>":
                     continue
-                cost = COST_MAP.get(model)
-                assert cost, f"missing cost for {model}"
+                cost = match_cost(model)
+                if cost is None:
+                    print(
+                        f"warning: missing cost for model {model!r} in {path}, "
+                        "counting tokens but treating cost as $0",
+                        file=sys.stderr,
+                    )
+                    acc_tokens += total
+                    continue
                 input_cost = input * cost["input"]
                 output_cost = output * cost["output"]
                 cache_read_cost = cache_read * cost["cache_read"]

@@ -306,6 +306,9 @@ def export_session(input_path: str) -> str:
     # Track which event_msg agent_messages we've already shown via response_item
     # to avoid duplicates — event_msg and response_item can both carry the same text
     seen_agent_messages = set()
+    # Same duplication problem applies to reasoning content: response_item/type
+    # "reasoning" and event_msg/type "agent_reasoning" can both carry the same text.
+    seen_reasoning = set()
 
     # Messages
     for rec in records:
@@ -357,7 +360,8 @@ def export_session(input_path: str) -> str:
                 for sb in summary_blocks:
                     if sb.get("type") == "summary_text":
                         summary_text += sb.get("text", "")
-                if summary_text.strip():
+                if summary_text.strip() and summary_text.strip() not in seen_reasoning:
+                    seen_reasoning.add(summary_text.strip())
                     preview = summary_text[:80].replace("\n", " ")
                     parts.append('<details class="reasoning">')
                     parts.append(f"<summary>Reasoning: {escape(preview)}...</summary>")
@@ -403,7 +407,9 @@ def export_session(input_path: str) -> str:
 
             elif ptype == "agent_reasoning":
                 reasoning_text = payload.get("text", "")
-                if reasoning_text.strip():
+                # Avoid duplicates if we already showed this via response_item
+                if reasoning_text.strip() and reasoning_text.strip() not in seen_reasoning:
+                    seen_reasoning.add(reasoning_text.strip())
                     preview = reasoning_text[:80].replace("\n", " ")
                     parts.append('<details class="reasoning">')
                     parts.append(f"<summary>Reasoning: {escape(preview)}...</summary>")

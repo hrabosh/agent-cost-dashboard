@@ -16,11 +16,15 @@ def escape(text: str) -> str:
 
 
 def render_text(text: str) -> str:
-    """Render text with basic markdown-ish formatting."""
+    """Render text with basic markdown-ish formatting.
+
+    Callers pass text that has already been HTML-escaped, so this function
+    must not escape it again.
+    """
     # Code blocks: ```lang\n...\n```
     def replace_code_block(m):
-        lang = escape(m.group(1) or "")
-        code = escape(m.group(2))
+        lang = m.group(1) or ""
+        code = m.group(2)
         label = f'<span class="code-lang">{lang}</span>' if lang else ""
         return f'<div class="code-block">{label}<pre><code>{code}</code></pre></div>'
 

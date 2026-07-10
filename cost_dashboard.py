@@ -64,6 +64,7 @@ class SessionStats(TypedDict):
     tool_time: float
     tools: DefaultDict[str, ToolStats]
     tps_samples: list[tuple[int, float, str]]
+    cost_events: list[tuple[datetime, str, float]]
     cwd: str
 
 
@@ -227,6 +228,12 @@ MANUAL_PRICING = {
         "cache_read": 0.125,
         "cache_write": 0.375,
     },
+    "gemini-2.5-flash-lite": {
+        "input": 0.10,
+        "output": 0.40,
+        "cache_read": 0.025,
+        "cache_write": 0.083,
+    },
     "gemini-2.5-flash": {
         "input": 0.30,
         "output": 2.50,
@@ -324,6 +331,24 @@ MANUAL_PRICING = {
     },
     # claude-opus-4.0 / 4.1 — $15/$75 (different, more expensive model)
     "claude-opus-4.1": {
+        "input": 15.0,
+        "output": 75.0,
+        "cache_read": 1.5,
+        "cache_write": 18.75,
+    },
+    "claude-opus-4-1": {
+        "input": 15.0,
+        "output": 75.0,
+        "cache_read": 1.5,
+        "cache_write": 18.75,
+    },
+    "claude-opus-4.0": {
+        "input": 15.0,
+        "output": 75.0,
+        "cache_read": 1.5,
+        "cache_write": 18.75,
+    },
+    "claude-opus-4-0": {
         "input": 15.0,
         "output": 75.0,
         "cache_read": 1.5,
@@ -504,17 +529,26 @@ def get_manual_cost(
     if or_cost is not None:
         return or_cost
 
-    for pattern, pricing in MANUAL_PRICING.items():
-        if pattern in model.lower():
-            input_cost = (input_tokens / 1_000_000) * pricing["input"]
-            output_cost = (output_tokens / 1_000_000) * pricing["output"]
-            cache_read_cost = (cache_read_tokens / 1_000_000) * pricing.get(
-                "cache_read", 0
-            )
-            cache_write_cost = (cache_write_tokens / 1_000_000) * pricing.get(
-                "cache_write", 0
-            )
-            return input_cost + output_cost + cache_read_cost + cache_write_cost
+    model_lower = model.lower()
+    # Prefer the longest (most specific) matching pattern so e.g.
+    # "gemini-2.5-flash-lite" matches its own entry rather than the shorter
+    # "gemini-2.5-flash" pattern that happens to be a substring of it.
+    best_pattern = None
+    for pattern in MANUAL_PRICING:
+        if pattern in model_lower:
+            if best_pattern is None or len(pattern) > len(best_pattern):
+                best_pattern = pattern
+    if best_pattern is not None:
+        pricing = MANUAL_PRICING[best_pattern]
+        input_cost = (input_tokens / 1_000_000) * pricing["input"]
+        output_cost = (output_tokens / 1_000_000) * pricing["output"]
+        cache_read_cost = (cache_read_tokens / 1_000_000) * pricing.get(
+            "cache_read", 0
+        )
+        cache_write_cost = (cache_write_tokens / 1_000_000) * pricing.get(
+            "cache_write", 0
+        )
+        return input_cost + output_cost + cache_read_cost + cache_write_cost
     return 0.0
 
 
@@ -603,17 +637,19 @@ def calc_avg_tokens_per_sec(tps_samples):
     """Calculate average tokens/second from samples.
 
     Each sample is (output_tokens, llm_seconds, model).
-    Returns average tokens/second, or 0 if no valid samples.
+    Returns a token-time-weighted average (sum tokens / sum seconds), or 0 if
+    no valid samples — averaging per-call ratios directly would let a small,
+    fast call skew the result as much as a large, slow one.
     """
     if not tps_samples:
         return 0.0
 
-    # Calculate tokens/sec for each sample and average them
-    tps_values = [tokens / secs for tokens, secs, _ in tps_samples if secs > 0]
-    if not tps_values:
+    total_tokens = sum(tokens for tokens, secs, _ in tps_samples if secs > 0)
+    total_secs = sum(secs for _, secs, _ in tps_samples if secs > 0)
+    if total_secs <= 0:
         return 0.0
 
-    return sum(tps_values) / len(tps_values)
+    return total_tokens / total_secs
 
 
 TOKEN_DETAIL_FIELDS = (
@@ -651,6 +687,7 @@ def create_session_stats() -> SessionStats:
         "tool_time": 0.0,
         "tools": defaultdict(create_tool_stats),
         "tps_samples": [],
+        "cost_events": [],
         "cwd": "",
     }
 
@@ -708,6 +745,9 @@ def record_llm_usage(
     if llm_delta > 0 and output_tokens > 0:
         stats["tps_samples"].append((output_tokens, llm_delta, model_name))
         mstats["llm_time"] += llm_delta
+
+    if ts:
+        stats["cost_events"].append((ts, model_name, cost))
 
     _record_timestamp(stats, ts)
 
@@ -811,16 +851,18 @@ def accumulate_session_into_project(
     merge_model_stats(project_stats["models"], stats["models"])
     merge_tool_stats(project_stats["tools"], stats["tools"])
 
-    n_ts = max(len(stats["timestamps"]), 1)
-    for ts in stats["timestamps"]:
+    # Attribute cost to the day/model it was actually incurred on, using each
+    # LLM call's own (timestamp, model, cost) rather than splitting the
+    # session total evenly across every timestamp — an even split misattributes
+    # cost across a midnight boundary or across models when a session uses
+    # more than one.
+    for ts, mdl, cost in stats["cost_events"]:
         day_key = ts.strftime("%Y-%m-%d")
         project_stats["daily_stats"][day_key]["messages"] += 1
-        project_stats["daily_stats"][day_key]["cost"] += stats["cost_total"] / n_ts
-        for mdl, mst in stats["models"].items():
-            project_stats["daily_stats"][day_key]["models"][mdl] = (
-                project_stats["daily_stats"][day_key]["models"].get(mdl, 0.0)
-                + mst["cost"] / n_ts
-            )
+        project_stats["daily_stats"][day_key]["cost"] += cost
+        project_stats["daily_stats"][day_key]["models"][mdl] = (
+            project_stats["daily_stats"][day_key]["models"].get(mdl, 0.0) + cost
+        )
 
     if stats["start"]:
         if (
@@ -1287,11 +1329,23 @@ def analyze_codex_jsonl_file(filepath: Path) -> SessionStats:
                         delta_usage = last_usage
                         latest_total_usage = total_usage
                     elif total_usage:
-                        delta_usage = (
-                            subtract_usage(total_usage, previous_total_usage)
-                            if previous_total_usage
-                            else total_usage
-                        )
+                        if previous_total_usage and (
+                            total_usage["total_tokens"]
+                            < previous_total_usage["total_tokens"]
+                        ):
+                            # The cumulative counter decreased (e.g. a context
+                            # compaction/reset shrank the running total).
+                            # subtract_usage would clamp every field to 0 here
+                            # and silently drop this turn's usage forever, so
+                            # treat the new cumulative value as a fresh epoch
+                            # and charge it directly instead.
+                            delta_usage = total_usage
+                        else:
+                            delta_usage = (
+                                subtract_usage(total_usage, previous_total_usage)
+                                if previous_total_usage
+                                else total_usage
+                            )
                         latest_total_usage = total_usage
 
                     if not delta_usage:
@@ -1428,11 +1482,20 @@ def analyze_gemini_jsonl_file(filepath: Path) -> SessionStats:
                             llm_delta = 0
                         last_request_ts = None
 
-                    input_tok = tokens.get("input", 0)
+                    raw_input_tok = tokens.get("input", 0)
                     output_tok = tokens.get("output", 0)
                     cache_read_tok = tokens.get("cached", 0)
                     cache_write_tok = tokens.get("cacheWrite", 0)  # Check for explicit write tokens
-                    total_tok = tokens.get("total", input_tok + output_tok + cache_read_tok + cache_write_tok)
+
+                    # Gemini's reported "input" token count is inclusive of any
+                    # cached tokens served from context cache, so bill/store
+                    # only the net (uncached) portion at the input rate to
+                    # avoid double counting input + cache read (mirrors the
+                    # same fix applied to the Codex analyzer above).
+                    input_tok = max(0, raw_input_tok - cache_read_tok)
+                    total_tok = tokens.get(
+                        "total", input_tok + output_tok + cache_read_tok + cache_write_tok
+                    )
 
                     cost = get_manual_cost(
                         model,
@@ -1442,25 +1505,18 @@ def analyze_gemini_jsonl_file(filepath: Path) -> SessionStats:
                         cache_write_tok,
                     )
 
-                    stats["messages"] += 1
-                    stats["input_tokens"] += input_tok
-                    stats["output_tokens"] += output_tok
-                    stats["cache_read_tokens"] += cache_read_tok
-                    stats["cache_write_tokens"] += cache_write_tok
-                    stats["total_tokens"] += total_tok
-                    stats["cost_total"] += cost
-
-                    stats["models"][model]["messages"] += 1
-                    stats["models"][model]["tokens"] += total_tok
-                    stats["models"][model]["cost"] += cost
-                    stats["models"][model]["output_tokens"] += output_tok
-
-                    if llm_delta > 0 and output_tok > 0:
-                        stats["tps_samples"].append((output_tok, llm_delta, model))
-                        stats["models"][model]["llm_time"] += llm_delta
-
-                    if ts:
-                        stats["timestamps"].append(ts)
+                    record_llm_usage(
+                        stats,
+                        model,
+                        input_tok,
+                        output_tok,
+                        cache_read_tok,
+                        cache_write_tok,
+                        total_tokens=total_tok,
+                        cost=cost,
+                        ts=ts,
+                        llm_delta=llm_delta,
+                    )
 
                     # Process tool calls
                     tool_calls = data.get("toolCalls", [])
@@ -1700,13 +1756,19 @@ def get_session_cwd(session_path: str, source_type: str = "standard") -> str:
                         continue
                     if data.get("cwd"):
                         return data["cwd"]
+                    break
                 elif source_type == "codex":
                     if data.get("type") == "session_meta":
                         return data.get("payload", {}).get("cwd", "")
+                    # session_meta can be preceded by other record types in a
+                    # resumed/forked session — keep scanning instead of giving
+                    # up after one line (which would otherwise dump this
+                    # session into the catch-all "unknown" project bucket).
+                    continue
                 else:
                     if data.get("type") == "session" and "cwd" in data:
                         return data["cwd"]
-                break
+                    continue
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
         pass
     return ""

@@ -75,18 +75,23 @@ def session_cost(path: str) -> Tuple[int, float]:
             if not tokens:
                 continue
                 
-            input_tok = tokens.get("input", 0)
+            raw_input_tok = tokens.get("input", 0)
             output_tok = tokens.get("output", 0)
             cache_read_tok = tokens.get("cached", 0)
+            # Gemini's reported "input" token count is inclusive of any cached
+            # tokens served from context cache, so bill only the net
+            # (uncached) portion at the input rate to avoid double counting
+            # input + cache read.
+            input_tok = max(0, raw_input_tok - cache_read_tok)
             total_tok = tokens.get("total", input_tok + output_tok + cache_read_tok)
-            
+
             cost_rates = get_cost_per_m(model)
             if cost_rates:
-                cost = (input_tok * cost_rates["input"] + 
-                        output_tok * cost_rates["output"] + 
+                cost = (input_tok * cost_rates["input"] +
+                        output_tok * cost_rates["output"] +
                         cache_read_tok * cost_rates["cache_read"]) / 1e6
                 acc_cost += cost
-            
+
             acc_tokens += total_tok
             
     return acc_tokens, acc_cost
