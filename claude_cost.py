@@ -65,7 +65,7 @@ COST_MAP: dict[str, Cost] = {
 def session_cost(path: str) -> tuple[int, float]:
     acc_tokens = 0
     acc_cost = 0.0
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
         for line in f.readlines():
             data: dict = json.loads(line)
             message: dict = data.get("message", {})
