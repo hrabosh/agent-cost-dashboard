@@ -2,6 +2,8 @@
 """Serve a dynamic HTML dashboard with cost statistics for all pi-agent sessions."""
 
 import json
+import hmac
+import os
 import re
 import subprocess
 import tempfile
@@ -9,7 +11,7 @@ import urllib.parse
 import uuid
 from pathlib import Path
 from collections import defaultdict
-from datetime import datetime
+from datetime import date, datetime
 import html
 import http.server
 import socketserver
@@ -18,6 +20,9 @@ import shlex
 import shutil
 import sys
 from typing import TypedDict, DefaultDict
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from worklog_store import WorklogStore, parse_iso, utc_iso
 
 
 # Type definitions
@@ -171,6 +176,13 @@ SESSIONS_DIRS = [
 ]
 TEMP_DIR = Path(tempfile.gettempdir()) / "pi-dashboard"
 ASSETS_DIR = Path(__file__).parent / "assets"
+WORKLOG_STORE = WorklogStore(
+    os.environ.get(
+        "AGENT_DASHBOARD_DB", str(Path(__file__).parent / "dashboard.sqlite3")
+    )
+)
+API_TOKEN = os.environ.get("AGENT_DASHBOARD_TOKEN", "")
+REPORT_TIMEZONE = os.environ.get("AGENT_DASHBOARD_TIMEZONE", "Europe/Prague")
 
 # Registry mapping session UUIDs to session data
 # This keeps sensitive path/command info server-side only
@@ -945,6 +957,7 @@ def analyze_jsonl_file(filepath: Path) -> SessionStats:
                     msg = data["message"]
                     ts = parse_timestamp(data.get("timestamp"))
                     role = msg.get("role")
+                    _record_timestamp(stats, ts)
 
                     # Process assistant messages (with or without usage)
                     if role == "assistant":
@@ -1084,6 +1097,7 @@ def analyze_claude_jsonl_file(filepath: Path) -> SessionStats:
                     cwd = data["cwd"]
 
                 ts = parse_timestamp(data.get("timestamp"))
+                _record_timestamp(stats, ts)
 
                 if record_type == "user":
                     if ts:
@@ -1287,6 +1301,7 @@ def analyze_codex_jsonl_file(filepath: Path) -> SessionStats:
                 if not isinstance(payload, dict):
                     payload = {}
                 ts = parse_timestamp(data.get("timestamp"))
+                _record_timestamp(stats, ts)
 
                 if record_type == "session_meta":
                     if not cwd:
@@ -1457,12 +1472,7 @@ def analyze_gemini_jsonl_file(filepath: Path) -> SessionStats:
                 # Gemini format uses startTime for the session meta line, and timestamp for others
                 ts_str = data.get("timestamp") or data.get("startTime")
                 ts = parse_timestamp(ts_str)
-
-                if ts:
-                    if stats["start"] is None or ts < stats["start"]:
-                        stats["start"] = ts
-                    if stats["end"] is None or ts > stats["end"]:
-                        stats["end"] = ts
+                _record_timestamp(stats, ts)
 
                 if record_type == "user":
                     if ts:
@@ -1524,6 +1534,7 @@ def analyze_gemini_jsonl_file(filepath: Path) -> SessionStats:
                         tool_name = tc.get("name", "unknown")
                         # Tool execution completion timestamp
                         tc_ts = parse_timestamp(tc.get("timestamp"))
+                        _record_timestamp(stats, tc_ts)
                         if tc_ts and ts:
                             tool_delta = (tc_ts - ts).total_seconds()
                             if 0 < tool_delta < 600:
@@ -2132,6 +2143,16 @@ def generate_html():
             }
         )
 
+    today = datetime.now(ZoneInfo(REPORT_TIMEZONE)).date()
+    worklogs = WORKLOG_STORE.report(date(2000, 1, 1), today, REPORT_TIMEZONE)
+    sync_status = WORKLOG_STORE.sync_status()
+    month_seconds = sum(
+        day["seconds"]
+        for project in worklogs
+        for day in project["daily"]
+        if day["date"] >= today.replace(day=1).isoformat()
+    )
+
     dashboard_css = load_asset("dashboard.css")
     dashboard_js = load_asset("dashboard.js")
     dashboard_data_json = json_for_script(
@@ -2142,6 +2163,12 @@ def generate_html():
             "tools": tools_json,
             "totalCost": global_stats["total_cost"],
             "totalToolTime": global_stats["total_tool_time"],
+            "worklogs": worklogs,
+            "syncMachines": sync_status,
+            "worklogDefaults": {
+                "from": today.replace(day=1).isoformat(),
+                "to": today.isoformat(),
+            },
         }
     )
     token_summary_card = render_token_summary_card(global_stats)
@@ -2151,14 +2178,14 @@ def generate_html():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent Cost Dashboard</title>
+    <title>Agent Work &amp; Cost Dashboard</title>
     <style>
 {dashboard_css}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Agent Cost Dashboard</h1>
+        <h1>Agent Work &amp; Cost Dashboard</h1>
         <p class="subtitle">Generated on {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} <span class="refresh-note">Refresh page for updated stats</span></p>
 
         <div class="stats-grid">
@@ -2169,6 +2196,14 @@ def generate_html():
             <div class="stat-card">
                 <div class="label">Projects</div>
                 <div class="value">{global_stats["total_projects"]}</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Work This Month</div>
+                <div class="value" style="color: var(--accent-blue)">{month_seconds / 3600:.1f}h</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Synced Machines</div>
+                <div class="value" style="color: var(--accent-green)">{len(sync_status)}</div>
             </div>
             <div class="stat-card">
                 <div class="label">Sessions</div>
@@ -2191,6 +2226,32 @@ def generate_html():
                 <div class="label">Avg Tokens/s</div>
                 <div class="value" style="color: var(--accent-blue)">{calc_avg_tokens_per_sec(global_stats["tps_samples"]):.1f}</div>
             </div>
+        </div>
+
+        <div class="section worklog-section">
+            <div class="section-header">
+                <span>Jira Work Report</span>
+                <span class="badge">{len(sync_status)} machines · central synced activity</span>
+            </div>
+            <div class="worklog-filters">
+                <label>From <input type="date" id="worklog-from"></label>
+                <label>To <input type="date" id="worklog-to"></label>
+                <label>Project <select id="worklog-project"><option value="">All projects</option></select></label>
+                <button class="copy-btn" id="copy-worklog" type="button">Copy for Jira</button>
+                <strong id="worklog-total">0h</strong>
+            </div>
+            <table id="worklog-table">
+                <thead>
+                    <tr>
+                        <th>Project</th>
+                        <th>Date</th>
+                        <th>Active time</th>
+                        <th>Decimal hours</th>
+                    </tr>
+                </thead>
+                <tbody id="worklog-tbody"></tbody>
+            </table>
+            <div class="empty-worklog" id="worklog-empty">No synced work in this period.</div>
         </div>
 
         <div class="section">
@@ -2311,8 +2372,109 @@ def generate_html():
     return html_content
 
 
+def validate_sync_payload(payload: object) -> tuple[str, list[dict]]:
+    """Validate and normalize one ingestion request."""
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+    machine_id = payload.get("machine_id")
+    sessions = payload.get("sessions")
+    if not isinstance(machine_id, str) or not machine_id.strip():
+        raise ValueError("machine_id is required")
+    if len(machine_id) > 128:
+        raise ValueError("machine_id is too long")
+    if not isinstance(sessions, list):
+        raise ValueError("sessions must be an array")
+    if len(sessions) > 100:
+        raise ValueError("at most 100 sessions are accepted per request")
+
+    normalized = []
+    for index, item in enumerate(sessions):
+        if not isinstance(item, dict):
+            raise ValueError(f"sessions[{index}] must be an object")
+        clean: dict = {}
+        for field in ("agent", "session_uid", "project_key"):
+            value = item.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"sessions[{index}].{field} is required")
+            if len(value) > 512:
+                raise ValueError(f"sessions[{index}].{field} is too long")
+            clean[field] = value.strip()
+        project_name = item.get("project_name", clean["project_key"])
+        if not isinstance(project_name, str):
+            raise ValueError(f"sessions[{index}] has invalid text fields")
+        clean["project_name"] = project_name[:512]
+
+        raw_spans = item.get("activity_spans")
+        if not isinstance(raw_spans, list) or len(raw_spans) > 10000:
+            raise ValueError(f"sessions[{index}].activity_spans is invalid")
+        spans = []
+        for span_index, span in enumerate(raw_spans):
+            if not isinstance(span, list) or len(span) != 2:
+                raise ValueError(
+                    f"sessions[{index}].activity_spans[{span_index}] is invalid"
+                )
+            try:
+                start, end = parse_iso(span[0]), parse_iso(span[1])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"sessions[{index}].activity_spans[{span_index}] has invalid timestamps"
+                ) from exc
+            if end <= start:
+                raise ValueError(
+                    f"sessions[{index}].activity_spans[{span_index}] ends before it starts"
+                )
+            spans.append([utc_iso(start), utc_iso(end)])
+        spans.sort(key=lambda span: span[0])
+        clean["activity_spans"] = spans
+        normalized.append(clean)
+    return machine_id.strip(), normalized
+
+
 class DashboardHandler(http.server.BaseHTTPRequestHandler):
     """HTTP request handler for the dashboard."""
+
+    def send_json(self, status: int, payload: dict | list) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def api_authorized(self) -> bool:
+        if not API_TOKEN:
+            self.send_json(503, {"error": "ingestion API token is not configured"})
+            return False
+        header = self.headers.get("Authorization", "")
+        expected = f"Bearer {API_TOKEN}"
+        if not hmac.compare_digest(header, expected):
+            self.send_json(401, {"error": "invalid API token"})
+            return False
+        return True
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != "/api/v1/sessions":
+            self.send_json(404, {"error": "not found"})
+            return
+        if not self.api_authorized():
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_json(400, {"error": "invalid Content-Length"})
+            return
+        if content_length <= 0 or content_length > 5 * 1024 * 1024:
+            self.send_json(413, {"error": "request body must be 1 byte to 5 MB"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(content_length))
+            machine_id, sessions = validate_sync_payload(payload)
+            count = WORKLOG_STORE.upsert_sessions(machine_id, sessions)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            self.send_json(400, {"error": str(exc)})
+            return
+        self.send_json(200, {"upserted": count})
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -2324,6 +2486,18 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             html_content = generate_html()
             self.wfile.write(html_content.encode("utf-8"))
+
+        elif parsed.path == "/api/v1/worklogs":
+            if not self.api_authorized():
+                return
+            try:
+                start = date.fromisoformat(query["from"][0]) if query.get("from") else None
+                end = date.fromisoformat(query["to"][0]) if query.get("to") else None
+                report = WORKLOG_STORE.report(start, end, REPORT_TIMEZONE)
+            except ValueError as exc:
+                self.send_json(400, {"error": str(exc)})
+                return
+            self.send_json(200, {"projects": report, "timezone": REPORT_TIMEZONE})
 
         elif parsed.path == "/session":
             uid = query.get("uid", [""])[0]
@@ -2362,6 +2536,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
 
 def main():
+    global WORKLOG_STORE, API_TOKEN, REPORT_TIMEZONE
     parser = argparse.ArgumentParser(description="Agent Cost Dashboard Server")
     parser.add_argument(
         "-H",
@@ -2373,7 +2548,29 @@ def main():
     parser.add_argument(
         "-p", "--port", type=int, default=8753, help="Port to serve on (default: 8753)"
     )
+    parser.add_argument(
+        "--db",
+        default=str(WORKLOG_STORE.path),
+        help="SQLite file for centrally synced work activity",
+    )
+    parser.add_argument(
+        "--api-token",
+        default=API_TOKEN,
+        help="Ingestion token (prefer AGENT_DASHBOARD_TOKEN)",
+    )
+    parser.add_argument(
+        "--timezone",
+        default=REPORT_TIMEZONE,
+        help="IANA timezone used to split work into days",
+    )
     args = parser.parse_args()
+    try:
+        ZoneInfo(args.timezone)
+    except ZoneInfoNotFoundError:
+        parser.error(f"unknown IANA timezone: {args.timezone}")
+    WORKLOG_STORE = WorklogStore(args.db)
+    API_TOKEN = args.api_token
+    REPORT_TIMEZONE = args.timezone
 
     # Check if any sessions directory exists
     any_exists = any(sessions_dir.exists() for sessions_dir, _, _ in SESSIONS_DIRS)
@@ -2392,6 +2589,9 @@ def main():
     httpd = DashboardServer((args.host, args.port), DashboardHandler)
     print("🚀 Agent Cost Dashboard (pi, omp, claude, codex, gemini)")
     print(f"   Serving on: http://{args.host}:{args.port}")
+    print(f"   Central worklog: {WORKLOG_STORE.path} ({REPORT_TIMEZONE})")
+    if not API_TOKEN:
+        print("   ⚠️  Sync API disabled: set AGENT_DASHBOARD_TOKEN")
     print("   Data from:")
     for sessions_dir, agent_cmd, source_type in SESSIONS_DIRS:
         exists = "✓" if sessions_dir.exists() else "✗"

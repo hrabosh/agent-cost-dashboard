@@ -731,11 +731,94 @@ function renderTools() {
     }).join('');
 }
 
+// ── Central worklog / Jira report ───────────────────────────────────
+const worklogs = dashboardData.worklogs || [];
+let visibleWorklogRows = [];
+
+function jiraDuration(seconds) {
+    const totalMinutes = Math.max(1, Math.round(seconds / 60));
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return [hours ? `${hours}h` : '', minutes ? `${minutes}m` : '']
+        .filter(Boolean).join(' ') || '1m';
+}
+
+function renderWorklogs() {
+    const from = document.getElementById('worklog-from').value;
+    const to = document.getElementById('worklog-to').value;
+    const selectedProject = document.getElementById('worklog-project').value;
+    visibleWorklogRows = [];
+    worklogs.forEach(project => {
+        if (selectedProject && project.project_key !== selectedProject) return;
+        project.daily.forEach(day => {
+            if (from && day.date < from) return;
+            if (to && day.date > to) return;
+            visibleWorklogRows.push({
+                projectKey: project.project_key,
+                project: project.project_name,
+                date: day.date,
+                seconds: day.seconds,
+            });
+        });
+    });
+    visibleWorklogRows.sort((a, b) =>
+        a.date.localeCompare(b.date) || a.project.localeCompare(b.project)
+    );
+
+    const total = visibleWorklogRows.reduce((sum, row) => sum + row.seconds, 0);
+    document.getElementById('worklog-total').textContent =
+        `${jiraDuration(total)} (${(total / 3600).toFixed(2)}h)`;
+    document.getElementById('worklog-tbody').innerHTML = visibleWorklogRows.map(row => `
+        <tr>
+            <td class="project-name">${escapeHtml(row.project)}</td>
+            <td>${row.date}</td>
+            <td style="color: var(--accent-blue)">${jiraDuration(row.seconds)}</td>
+            <td>${(row.seconds / 3600).toFixed(2)}h</td>
+        </tr>
+    `).join('');
+    document.getElementById('worklog-empty').style.display =
+        visibleWorklogRows.length ? 'none' : 'block';
+}
+
+function setupWorklogs() {
+    const defaults = dashboardData.worklogDefaults || {};
+    const fromInput = document.getElementById('worklog-from');
+    const toInput = document.getElementById('worklog-to');
+    const projectSelect = document.getElementById('worklog-project');
+    fromInput.value = defaults.from || '';
+    toInput.value = defaults.to || '';
+    worklogs
+        .slice()
+        .sort((a, b) => a.project_name.localeCompare(b.project_name))
+        .forEach(project => {
+            const option = document.createElement('option');
+            option.value = project.project_key;
+            option.textContent = project.project_name;
+            projectSelect.appendChild(option);
+        });
+    [fromInput, toInput, projectSelect].forEach(element =>
+        element.addEventListener('change', renderWorklogs)
+    );
+    document.getElementById('copy-worklog').addEventListener('click', async event => {
+        const text = visibleWorklogRows.map(row =>
+            `${row.date}\t${row.project}\t${jiraDuration(row.seconds)}\t${(row.seconds / 3600).toFixed(2)}h`
+        ).join('\n');
+        if (!text) return;
+        await navigator.clipboard.writeText(text);
+        const button = event.currentTarget;
+        const previous = button.textContent;
+        button.textContent = 'Copied';
+        setTimeout(() => { button.textContent = previous; }, 1200);
+    });
+    renderWorklogs();
+}
+
 // Setup
 setupSorting('projects-table', projectSort, renderProjects);
 setupSorting('sessions-table', sessionsSort, renderSessions);
 setupSorting('models-table', modelSort, renderModels);
 setupSorting('tools-table', toolSort, renderTools);
+setupWorklogs();
 
 // Initial render
 renderProjects();

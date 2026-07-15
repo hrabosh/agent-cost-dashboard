@@ -434,6 +434,46 @@ tr:hover {
     border-color: var(--accent-blue);
 }
 
+.worklog-filters {
+    display: flex;
+    align-items: end;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 16px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.worklog-filters label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.worklog-filters input,
+.worklog-filters select {
+    min-height: 32px;
+    padding: 5px 8px;
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+}
+
+.worklog-filters strong {
+    margin-left: auto;
+    color: var(--accent-blue);
+    font-size: 18px;
+}
+
+.empty-worklog {
+    display: none;
+    padding: 24px 16px;
+    text-align: center;
+    color: var(--text-secondary);
+}
+
 .icon-btn {
     background: transparent;
     border: 1px solid var(--border-color);
@@ -481,5 +521,10 @@ footer {
 
     .token-breakdown {
         grid-template-columns: 1fr;
+    }
+
+    .worklog-filters strong {
+        width: 100%;
+        margin-left: 0;
     }
 }

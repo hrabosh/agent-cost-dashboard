@@ -1,3 +1,7 @@
 *.jsonl
 __pycache__/
+*.py[cod]
+dashboard.sqlite3
+dashboard.sqlite3-shm
+dashboard.sqlite3-wal
 .DS_Store
