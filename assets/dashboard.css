@@ -74,6 +74,25 @@ h1 {
     color: var(--accent-green);
 }
 
+.subscription-value {
+    color: var(--accent-yellow);
+    font-size: 22px !important;
+}
+
+.dashboard-notice {
+    margin: -16px 0 24px;
+    padding: 10px 14px;
+    color: var(--accent-yellow);
+    background: rgba(210, 153, 34, 0.1);
+    border: 1px solid rgba(210, 153, 34, 0.35);
+    border-radius: 6px;
+}
+
+.unpriced {
+    color: var(--accent-yellow);
+    font-weight: 600;
+}
+
 .token-card {
     grid-column: span 2;
 }

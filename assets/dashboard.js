@@ -693,12 +693,12 @@ function renderModels() {
                 <td class="tokens" title="${formatFullNumber(m.cache_write_tokens)}">${formatCompactNumber(m.cache_write_tokens)}</td>
                 <td class="tokens" title="${formatFullNumber(m.reasoning_tokens)}">${formatCompactNumber(m.reasoning_tokens)}</td>
                 <td style="color: var(--accent-blue)">${(m.avg_tps || 0).toFixed(1)}</td>
-                <td class="cost">$${m.cost.toFixed(2)}</td>
+                <td class="cost">${m.priced ? '$' + m.cost.toFixed(2) : '<span class="unpriced">Unpriced</span>'}</td>
                 <td>
-                    <div class="bar-container" style="width: 100px; display: inline-block; vertical-align: middle;">
+                    ${m.priced ? `<div class="bar-container" style="width: 100px; display: inline-block; vertical-align: middle;">
                         <div class="bar" style="width: ${m.pct}%"></div>
                     </div>
-                    ${m.pct.toFixed(1)}%
+                    ${m.pct.toFixed(1)}%` : '—'}
                 </td>
             </tr>
         `;
@@ -736,6 +736,10 @@ function renderTools() {
 
 // ── Central worklog / Jira report ───────────────────────────────────
 const worklogs = dashboardData.worklogs || [];
+const billing = dashboardData.billing || {};
+const projectRates = billing.project_rates || {};
+const billingCurrency = billing.currency || 'USD';
+const billingIncrement = Math.max(1, Number(billing.billing_increment_minutes || 1));
 let visibleWorklogRows = [];
 
 function jiraDuration(seconds) {
@@ -746,10 +750,20 @@ function jiraDuration(seconds) {
         .filter(Boolean).join(' ') || '1m';
 }
 
+function formatMoney(value) {
+    return `${billingCurrency} ${Number(value || 0).toFixed(2)}`;
+}
+
+function roundedBillableHours(seconds) {
+    const minutes = Math.ceil(Math.max(0, seconds) / 60 / billingIncrement) * billingIncrement;
+    return minutes / 60;
+}
+
 function renderWorklogs() {
     const from = document.getElementById('worklog-from').value;
     const to = document.getElementById('worklog-to').value;
     const selectedProject = document.getElementById('worklog-project').value;
+    const basis = document.getElementById('worklog-basis').value;
     visibleWorklogRows = [];
     worklogs.forEach(project => {
         if (selectedProject && project.project_key !== selectedProject) return;
@@ -761,6 +775,7 @@ function renderWorklogs() {
                 project: project.project_name,
                 date: day.date,
                 seconds: day.seconds,
+                agentSeconds: day.agent_seconds || day.seconds,
             });
         });
     });
@@ -768,15 +783,36 @@ function renderWorklogs() {
         a.date.localeCompare(b.date) || a.project.localeCompare(b.project)
     );
 
-    const total = visibleWorklogRows.reduce((sum, row) => sum + row.seconds, 0);
+    visibleWorklogRows.forEach(row => {
+        row.selectedSeconds = basis === 'agent' ? row.agentSeconds : row.seconds;
+        row.billableHours = roundedBillableHours(row.selectedSeconds);
+        const configuredRate = projectRates[row.projectKey] ?? projectRates[row.project];
+        row.rate = configuredRate === undefined ? null : Number(configuredRate);
+        row.amount = row.rate === null ? null : row.billableHours * row.rate;
+    });
+    const total = visibleWorklogRows.reduce((sum, row) => sum + row.selectedSeconds, 0);
+    const totalBillable = visibleWorklogRows.reduce((sum, row) => sum + row.billableHours, 0);
+    const pricedRows = visibleWorklogRows.filter(row => row.amount !== null);
+    const missingRateRows = visibleWorklogRows.length - pricedRows.length;
+    const totalAmount = pricedRows.reduce((sum, row) => sum + row.amount, 0);
+    let amountSummary = ' · rates not configured';
+    if (pricedRows.length && !missingRateRows) {
+        amountSummary = ` · ${formatMoney(totalAmount)}`;
+    } else if (pricedRows.length) {
+        amountSummary = ` · partial ${formatMoney(totalAmount)} · ${missingRateRows} row${missingRateRows === 1 ? '' : 's'} missing rates`;
+    }
     document.getElementById('worklog-total').textContent =
-        `${jiraDuration(total)} (${(total / 3600).toFixed(2)}h)`;
+        `${jiraDuration(total)} · ${totalBillable.toFixed(2)} billable h` +
+        amountSummary;
     document.getElementById('worklog-tbody').innerHTML = visibleWorklogRows.map(row => `
         <tr>
             <td class="project-name">${escapeHtml(row.project)}</td>
             <td>${row.date}</td>
             <td style="color: var(--accent-blue)">${jiraDuration(row.seconds)}</td>
-            <td>${(row.seconds / 3600).toFixed(2)}h</td>
+            <td style="color: var(--accent-purple)">${jiraDuration(row.agentSeconds)}</td>
+            <td>${row.billableHours.toFixed(2)}h</td>
+            <td>${row.rate === null ? '—' : formatMoney(row.rate) + '/h'}</td>
+            <td class="cost">${row.amount === null ? '—' : formatMoney(row.amount)}</td>
         </tr>
     `).join('');
     document.getElementById('worklog-empty').style.display =
@@ -788,6 +824,7 @@ function setupWorklogs() {
     const fromInput = document.getElementById('worklog-from');
     const toInput = document.getElementById('worklog-to');
     const projectSelect = document.getElementById('worklog-project');
+    const basisSelect = document.getElementById('worklog-basis');
     fromInput.value = defaults.from || '';
     toInput.value = defaults.to || '';
     worklogs
@@ -799,14 +836,22 @@ function setupWorklogs() {
             option.textContent = project.project_name;
             projectSelect.appendChild(option);
         });
-    [fromInput, toInput, projectSelect].forEach(element =>
+    [fromInput, toInput, projectSelect, basisSelect].forEach(element =>
         element.addEventListener('change', renderWorklogs)
     );
     document.getElementById('copy-worklog').addEventListener('click', async event => {
-        const text = visibleWorklogRows.map(row =>
-            `${row.date}\t${row.project}\t${jiraDuration(row.seconds)}\t${(row.seconds / 3600).toFixed(2)}h`
-        ).join('\n');
-        if (!text) return;
+        if (!visibleWorklogRows.length) return;
+        const header = ['Date', 'Project', 'Wall-clock', 'Agent time', 'Billable hours', 'Rate', 'Amount'];
+        const lines = visibleWorklogRows.map(row => [
+            row.date,
+            row.project,
+            (row.seconds / 3600).toFixed(2),
+            (row.agentSeconds / 3600).toFixed(2),
+            row.billableHours.toFixed(2),
+            row.rate === null ? '' : row.rate.toFixed(2),
+            row.amount === null ? '' : row.amount.toFixed(2),
+        ].join('\t'));
+        const text = [header.join('\t'), ...lines].join('\n');
         await navigator.clipboard.writeText(text);
         const button = event.currentTarget;
         const previous = button.textContent;

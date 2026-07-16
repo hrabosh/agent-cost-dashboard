@@ -1,6 +1,7 @@
 # Agent Cost Dashboard
 
-Web dashboard to monitor API costs for [Pi](https://github.com/mariozechner/pi-coding-agent), [Oh My Pi](https://github.com/can1357/oh-my-pi), [Claude Code](https://github.com/anthropics/claude-code), [Codex CLI](https://github.com/openai/codex), and [Gemini CLI](https://github.com/google-gemini/gemini-cli) coding agents.
+Web dashboard for coding-agent usage, API-equivalent token value, subscription
+spend, and invoice-ready project time. It supports [Pi](https://github.com/mariozechner/pi-coding-agent), [Oh My Pi](https://github.com/can1357/oh-my-pi), [Claude Code](https://github.com/anthropics/claude-code), [Codex CLI](https://github.com/openai/codex), and [Gemini CLI](https://github.com/google-gemini/gemini-cli).
 
 No external dependencies — pure Python stdlib.
 
@@ -12,15 +13,15 @@ central SQLite database and produce project/date reports ready to copy into Jira
 ## Features
 
 ### Global Statistics
-Track total spending across all projects and sessions:
+Track usage and estimated API-equivalent value across all projects and sessions:
 - Total tokens broken down by input, output, cache-read, cache-write, and reasoning counts when exposed
 - Detailed token usage across all models where source data exposes it
 - Session count and project count
 - LLM time vs tool execution time
 - Average tokens per second across all API calls
 
-### Daily Spending Chart
-Timeline of API costs over time.
+### Daily API-Equivalent Value Chart
+Timeline of estimated API-equivalent token value over time.
 
 ### Model Breakdown
 Costs broken down by AI model (Claude, Gemini, GPT-5, O3, O4, GLM, etc.):
@@ -150,6 +151,34 @@ Scheduler task that runs `py C:\path\to\sync_agent_hours.py` every five minutes.
 Because the collector uses only Python's standard library, there are no packages
 to install on workstations.
 
+### Subscription and invoice configuration
+
+Codex CLI and Claude CLI sessions authenticated through user subscriptions do
+not have a per-session billed cost. The dashboard therefore keeps actual fixed
+subscription spend separate from the estimated API-equivalent value of the
+recorded tokens.
+
+Configure the monthly fees you actually pay, optional hourly rates for
+canonical project names, the invoice currency, and an optional rounding
+increment:
+
+```bash
+export AGENT_DASHBOARD_CURRENCY="EUR"
+export AGENT_DASHBOARD_SUBSCRIPTIONS='{
+  "openai": {"name": "ChatGPT subscription", "monthly_cost": 0},
+  "anthropic": {"name": "Claude subscription", "monthly_cost": 0}
+}'
+export AGENT_DASHBOARD_PROJECT_RATES='{
+  "client-project": 85,
+  "another-project": 100
+}'
+export AGENT_DASHBOARD_BILLING_INCREMENT="15"
+```
+
+Replace the zero subscription amounts and example rates with the amounts you
+pay and invoice. The billing increment is in minutes and rounds each daily
+project row upward; it defaults to one minute.
+
 ### Project names across computers
 
 Folder basenames are the default shared project names. If the same project uses
@@ -175,10 +204,14 @@ or isolated event contributes one minute. The report unions all spans for the
 same project before totaling them, then splits them at midnight in the configured
 timezone. Change the cutoff per workstation with `--idle-minutes`.
 
-This deliberately measures active agent-session wall time, not only model
-inference time. It is deterministic and auditable; an AI API is not required for
-time accounting. An OpenAI-powered Jira summary can later be added on top of the
-authenticated reporting API without changing the stored time data.
+The report exposes two measures. **Wall-clock time** unions every overlapping
+span for a project. **Agent-hours** sums active time for each session, including
+agents working in parallel; this is normally the useful basis for invoicing
+agent work. The copy button exports both measures,
+billable hours, configured rate, and invoice amount as tab-separated rows.
+
+This measures active agent-session time, not only model inference time. It is
+deterministic and auditable; an AI API is not required for time accounting.
 
 ## Session Directories
 
@@ -215,7 +248,12 @@ python gemini_export.py input.jsonl output.html
 
 ## Pricing
 
-Costs are calculated using pricing reported by the agent. For models that don't report costs (e.g., Gemini via Google Cloud), estimated pricing is applied based on public API rates. Supported model families: Claude, Gemini, GPT-5, O3/O4, GLM.
+Values reported for subscription-backed sessions are API-equivalent estimates,
+not actual incremental charges. The calculator prefers explicit provider rates
+in `MANUAL_PRICING`, then falls back to the committed OpenRouter catalog for
+models without a provider rate. Unknown models are shown as **Unpriced** rather
+than incorrectly appearing free. Supported model families include Claude,
+Gemini, GPT-5, O3/O4, and GLM.
 
 ## Credits
 

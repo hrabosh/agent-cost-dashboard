@@ -185,6 +185,77 @@ WORKLOG_STORE = WorklogStore(
 API_TOKEN = os.environ.get("AGENT_DASHBOARD_TOKEN", "")
 REPORT_TIMEZONE = os.environ.get("AGENT_DASHBOARD_TIMEZONE", "Europe/Prague")
 
+
+def load_billing_config() -> dict:
+    """Load fixed subscriptions and optional project invoice rates from env."""
+    warnings = []
+    currency = os.environ.get("AGENT_DASHBOARD_CURRENCY", "USD").strip() or "USD"
+
+    subscriptions = []
+    raw_subscriptions = os.environ.get("AGENT_DASHBOARD_SUBSCRIPTIONS", "")
+    if raw_subscriptions:
+        try:
+            loaded = json.loads(raw_subscriptions)
+            if isinstance(loaded, dict):
+                loaded = [
+                    {"provider": provider, **details}
+                    for provider, details in loaded.items()
+                    if isinstance(details, dict)
+                ]
+            if not isinstance(loaded, list):
+                raise ValueError("must be an array or object")
+            for item in loaded:
+                if not isinstance(item, dict):
+                    raise ValueError("entries must be objects")
+                monthly_cost = float(item.get("monthly_cost", 0))
+                if not math.isfinite(monthly_cost) or monthly_cost < 0:
+                    raise ValueError("monthly_cost must be non-negative")
+                subscriptions.append(
+                    {
+                        "provider": str(item.get("provider", "subscription"))[:128],
+                        "name": str(item.get("name", item.get("provider", "Subscription")))[
+                            :256
+                        ],
+                        "monthly_cost": monthly_cost,
+                    }
+                )
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            warnings.append(f"Invalid AGENT_DASHBOARD_SUBSCRIPTIONS: {exc}")
+
+    project_rates = {}
+    raw_rates = os.environ.get("AGENT_DASHBOARD_PROJECT_RATES", "")
+    if raw_rates:
+        try:
+            loaded = json.loads(raw_rates)
+            if not isinstance(loaded, dict):
+                raise ValueError("must be an object")
+            for project, value in loaded.items():
+                rate = float(value)
+                if not math.isfinite(rate) or rate < 0:
+                    raise ValueError(f"invalid rate for {project}")
+                project_rates[str(project)] = rate
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            warnings.append(f"Invalid AGENT_DASHBOARD_PROJECT_RATES: {exc}")
+
+    try:
+        increment = int(os.environ.get("AGENT_DASHBOARD_BILLING_INCREMENT", "1"))
+        if increment < 1 or increment > 1440:
+            raise ValueError("must be between 1 and 1440 minutes")
+    except ValueError as exc:
+        warnings.append(f"Invalid AGENT_DASHBOARD_BILLING_INCREMENT: {exc}")
+        increment = 1
+
+    return {
+        "currency": currency[:16],
+        "subscriptions": subscriptions,
+        "monthly_subscription_cost": sum(
+            item["monthly_cost"] for item in subscriptions
+        ),
+        "project_rates": project_rates,
+        "billing_increment_minutes": increment,
+        "warnings": warnings,
+    }
+
 # Registry mapping session UUIDs to session data
 # This keeps sensitive path/command info server-side only
 SESSION_REGISTRY: dict[str, Session] = {}
@@ -225,7 +296,7 @@ def get_session_id_from_file(
 
 # Manual pricing for models that report zero cost (price per million tokens).
 # Format: model_pattern -> {"input": price_per_M, "output": price_per_M, "cache_read": price_per_M}
-# Prices sourced from OpenRouter (openrouter.ai/api/v1/models) as of 2026-05
+# Explicit provider/public API rates, maintained for known model versions.
 #
 # Rules:
 #  - Only add entries for specific known model versions. No broad family prefixes
@@ -401,6 +472,31 @@ MANUAL_PRICING = {
     # ── OpenAI / Codex ────────────────────────────────────────────────────────
     # More specific patterns before less specific ones.
     # Cache pricing ~10% of input (Codex CLI product rate).
+    # GPT-5.6 rates are the official OpenAI standard API prices per 1M tokens:
+    # https://developers.openai.com/api/docs/pricing
+    "gpt-5.6-sol": {
+        "input": 5.0,
+        "output": 30.0,
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+    },
+    "gpt-5.6-terra": {
+        "input": 2.5,
+        "output": 15.0,
+        "cache_read": 0.25,
+        "cache_write": 3.125,
+    },
+    "gpt-5.6-luna": {
+        "input": 1.0,
+        "output": 6.0,
+        "cache_read": 0.1,
+        "cache_write": 1.25,
+    },
+    "gpt-5.5": {
+        "input": 5.0,
+        "output": 30.0,
+        "cache_read": 0.5,
+    },
     "gpt-5.3-codex": {
         "input": 1.75,
         "output": 14.0,
@@ -441,8 +537,8 @@ MANUAL_PRICING = {
 
 # Live pricing from OpenRouter, read from the committed models.json next to this
 # script (refresh it with `python3 update_models.py`). Prices are per-token
-# strings that we convert to dollars-per-million. MANUAL_PRICING above is the
-# offline fallback for models missing from the file.
+# strings that we convert to dollars-per-million. The catalog is a fallback for
+# models without an explicit MANUAL_PRICING entry above.
 OPENROUTER_MODELS_FILE = Path(__file__).parent / "models.json"
 _OPENROUTER_PRICING: dict[str, dict[str, float]] | None = None
 
@@ -535,13 +631,7 @@ def get_manual_cost(
     cache_read_tokens: int,
     cache_write_tokens: int = 0,
 ) -> float:
-    """Calculate cost, preferring live OpenRouter pricing, then the built-in table."""
-    or_cost = get_openrouter_cost(
-        model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
-    )
-    if or_cost is not None:
-        return or_cost
-
+    """Calculate API-equivalent value from official/manual then catalog rates."""
     model_lower = model.lower()
     # Prefer the longest (most specific) matching pattern so e.g.
     # "gemini-2.5-flash-lite" matches its own entry rather than the shorter
@@ -562,7 +652,23 @@ def get_manual_cost(
             "cache_write", 0
         )
         return input_cost + output_cost + cache_read_cost + cache_write_cost
+    or_cost = get_openrouter_cost(
+        model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+    )
+    if or_cost is not None:
+        return or_cost
     return 0.0
+
+
+def model_has_pricing(model: str) -> bool:
+    """Return whether a model has an explicit catalog or manual price entry."""
+    global _OPENROUTER_PRICING
+    if _OPENROUTER_PRICING is None:
+        _OPENROUTER_PRICING = _build_openrouter_pricing()
+    if _normalize_model_name(model) in _OPENROUTER_PRICING:
+        return True
+    model_lower = model.lower()
+    return any(pattern in model_lower for pattern in MANUAL_PRICING)
 
 
 def parse_timestamp(ts):
@@ -2176,12 +2282,16 @@ def generate_html():
     # Build global models JSON for client-side sorting
     total_cost_val = global_stats["total_cost"] if global_stats["total_cost"] > 0 else 1
     models_json = []
+    unpriced_models = []
     for model_name, mstats in global_stats["models"].items():
         model_tps = (
             mstats.get("output_tokens", 0) / mstats.get("llm_time", 1)
             if mstats.get("llm_time", 0) > 0
             else 0
         )
+        priced = mstats["cost"] > 0 or model_has_pricing(model_name)
+        if not priced and mstats["tokens"] > 0:
+            unpriced_models.append(model_name)
         models_json.append(
             {
                 "name": model_name,
@@ -2196,6 +2306,7 @@ def generate_html():
                 "cost": mstats["cost"],
                 "avg_tps": model_tps,
                 "pct": mstats["cost"] / total_cost_val * 100,
+                "priced": priced,
             }
         )
 
@@ -2231,6 +2342,13 @@ def generate_html():
         for day in project["daily"]
         if day["date"] >= today.replace(day=1).isoformat()
     )
+    month_agent_seconds = sum(
+        day["agent_seconds"]
+        for project in worklogs
+        for day in project["daily"]
+        if day["date"] >= today.replace(day=1).isoformat()
+    )
+    billing = load_billing_config()
 
     dashboard_css = load_asset("dashboard.css")
     dashboard_js = load_asset("dashboard.js")
@@ -2242,7 +2360,9 @@ def generate_html():
             "tools": tools_json,
             "totalCost": global_stats["total_cost"],
             "totalToolTime": global_stats["total_tool_time"],
+            "unpricedModels": sorted(unpriced_models),
             "worklogs": worklogs,
+            "billing": billing,
             "syncMachines": sync_status,
             "worklogDefaults": {
                 "from": today.replace(day=1).isoformat(),
@@ -2251,33 +2371,57 @@ def generate_html():
         }
     )
     token_summary_card = render_token_summary_card(global_stats)
+    subscription_value = (
+        f'{billing["currency"]} {billing["monthly_subscription_cost"]:.2f}'
+        if billing["subscriptions"]
+        else "Not configured"
+    )
+    notices = []
+    if unpriced_models:
+        notices.append(
+            "API-equivalent total excludes unpriced models: "
+            + ", ".join(sorted(unpriced_models))
+        )
+    notices.extend(billing["warnings"])
+    notices_html = "".join(
+        f'<div class="dashboard-notice">{html.escape(message)}</div>'
+        for message in notices
+    )
 
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent Work &amp; Cost Dashboard</title>
+    <title>Agent Work &amp; Subscription Dashboard</title>
     <style>
 {dashboard_css}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Agent Work &amp; Cost Dashboard</h1>
+        <h1>Agent Work &amp; Subscription Dashboard</h1>
         <p class="subtitle">Generated on {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} <span class="refresh-note">Refresh page for updated stats</span></p>
 
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="label">Total Cost</div>
+                <div class="label">API-equivalent value</div>
                 <div class="value cost">${global_stats["total_cost"]:.2f}</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Subscriptions / month</div>
+                <div class="value subscription-value">{subscription_value}</div>
             </div>
             <div class="stat-card">
                 <div class="label">Projects</div>
                 <div class="value">{global_stats["total_projects"]}</div>
             </div>
             <div class="stat-card">
-                <div class="label">Work This Month</div>
+                <div class="label">Agent-hours this month</div>
+                <div class="value" style="color: var(--accent-blue)">{month_agent_seconds / 3600:.1f}h</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Wall-clock this month</div>
                 <div class="value" style="color: var(--accent-blue)">{month_seconds / 3600:.1f}h</div>
             </div>
             <div class="stat-card">
@@ -2306,17 +2450,19 @@ def generate_html():
                 <div class="value" style="color: var(--accent-blue)">{calc_avg_tokens_per_sec(global_stats["tps_samples"]):.1f}</div>
             </div>
         </div>
+        {notices_html}
 
         <div class="section worklog-section">
             <div class="section-header">
-                <span>Jira Work Report</span>
-                <span class="badge">{len(sync_status)} machines · central synced activity</span>
+                <span>Invoice &amp; Worklog Report</span>
+                <span class="badge">Agent-hours count parallel agents · wall-clock removes overlap</span>
             </div>
             <div class="worklog-filters">
                 <label>From <input type="date" id="worklog-from"></label>
                 <label>To <input type="date" id="worklog-to"></label>
                 <label>Project <select id="worklog-project"><option value="">All projects</option></select></label>
-                <button class="copy-btn" id="copy-worklog" type="button">Copy for Jira</button>
+                <label>Invoice using <select id="worklog-basis"><option value="agent">Agent-hours</option><option value="wall">Wall-clock</option></select></label>
+                <button class="copy-btn" id="copy-worklog" type="button">Copy invoice rows</button>
                 <strong id="worklog-total">0h</strong>
             </div>
             <table id="worklog-table">
@@ -2324,8 +2470,11 @@ def generate_html():
                     <tr>
                         <th>Project</th>
                         <th>Date</th>
-                        <th>Active time</th>
-                        <th>Decimal hours</th>
+                        <th>Wall-clock</th>
+                        <th>Agent time</th>
+                        <th>Billable hours</th>
+                        <th>Rate</th>
+                        <th>Amount</th>
                     </tr>
                 </thead>
                 <tbody id="worklog-tbody"></tbody>
@@ -2335,7 +2484,7 @@ def generate_html():
 
         <div class="section">
             <div class="section-header">
-                <span>Daily Spending</span>
+                <span>Daily API-equivalent Value</span>
             </div>
             <div class="daily-chart" id="daily-chart-content"></div>
         </div>
@@ -2356,8 +2505,8 @@ def generate_html():
                         <th data-sort="cache_write_tokens">Cache Write <span class="sort-icon">▼</span></th>
                         <th data-sort="reasoning_tokens">Reasoning <span class="sort-icon">▼</span></th>
                         <th data-sort="avg_tps">Avg Tokens/s <span class="sort-icon">▼</span></th>
-                        <th data-sort="cost">Cost <span class="sort-icon">▼</span></th>
-                        <th data-sort="pct">% of Total <span class="sort-icon">▼</span></th>
+                        <th data-sort="cost">API equivalent <span class="sort-icon">▼</span></th>
+                        <th data-sort="pct">% of priced total <span class="sort-icon">▼</span></th>
                     </tr>
                 </thead>
                 <tbody id="models-tbody">
@@ -2400,7 +2549,7 @@ def generate_html():
                         <th data-sort="llm_time">LLM Time <span class="sort-icon">▼</span></th>
                         <th data-sort="tool_time">Tool Time <span class="sort-icon">▼</span></th>
                         <th data-sort="avg_tps">Tok/s <span class="sort-icon">▼</span></th>
-                        <th data-sort="cost">Cost <span class="sort-icon">▼</span></th>
+                        <th data-sort="cost">API equivalent <span class="sort-icon">▼</span></th>
                         <th data-sort="last_activity" class="sorted">Last Activity <span class="sort-icon">▼</span></th>
                     </tr>
                 </thead>
@@ -2425,7 +2574,7 @@ def generate_html():
                         <th data-sort="avg_tps">Tok/s <span class="sort-icon">▼</span></th>
                         <th data-sort="messages">Messages <span class="sort-icon">▼</span></th>
                         <th data-sort="tokens">Tokens <span class="sort-icon">▼</span></th>
-                        <th data-sort="cost">Cost <span class="sort-icon">▼</span></th>
+                        <th data-sort="cost">API equivalent <span class="sort-icon">▼</span></th>
                         <th>Actions</th>
                     </tr>
                 </thead>
@@ -2435,7 +2584,7 @@ def generate_html():
         </div>
 
         <footer>
-            Agent Cost Dashboard • Data from ~/.pi, ~/.omp, ~/.claude, and ~/.codex
+            Agent Work &amp; Subscription Dashboard • API-equivalent values are estimates, not subscription charges
         </footer>
     </div>
     <script>

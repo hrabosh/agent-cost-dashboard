@@ -131,12 +131,27 @@ class WorklogStoreTests(unittest.TestCase):
             date(2026, 7, 15), date(2026, 7, 15), "UTC"
         )
         self.assertEqual(report[0]["seconds"], 90 * 60)
+        self.assertEqual(report[0]["agent_seconds"], 2 * 60 * 60)
         self.assertEqual(report[0]["machines"], 2)
         self.assertEqual(report[0]["sessions"], 2)
         self.assertEqual(
             {item["machine_id"] for item in self.store.sync_status()},
             {"desktop", "laptop"},
         )
+
+    def test_agent_hours_count_parallel_sessions(self):
+        self.store.upsert_sessions(
+            "desktop",
+            [
+                self.session("one", "2026-07-15T10:00:00Z", "2026-07-15T11:00:00Z"),
+                self.session("two", "2026-07-15T10:30:00Z", "2026-07-15T11:30:00Z"),
+            ],
+        )
+        report = self.store.report(
+            date(2026, 7, 15), date(2026, 7, 15), "UTC"
+        )
+        self.assertEqual(report[0]["seconds"], 90 * 60)
+        self.assertEqual(report[0]["agent_seconds"], 2 * 60 * 60)
 
     def test_upsert_replaces_a_growing_session(self):
         self.store.upsert_sessions(
@@ -164,8 +179,20 @@ class WorklogStoreTests(unittest.TestCase):
         self.assertEqual(
             report[0]["daily"],
             [
-                {"date": "2026-07-15", "seconds": 1800, "hours": 0.5},
-                {"date": "2026-07-16", "seconds": 1800, "hours": 0.5},
+                {
+                    "date": "2026-07-15",
+                    "seconds": 1800,
+                    "hours": 0.5,
+                    "agent_seconds": 1800,
+                    "agent_hours": 0.5,
+                },
+                {
+                    "date": "2026-07-16",
+                    "seconds": 1800,
+                    "hours": 0.5,
+                    "agent_seconds": 1800,
+                    "agent_hours": 0.5,
+                },
             ],
         )
 

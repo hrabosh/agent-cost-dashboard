@@ -212,7 +212,7 @@ class WorklogStore:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT machine_id, session_uid, project_key, project_name,
+                SELECT machine_id, agent, session_uid, project_key, project_name,
                        activity_spans
                 FROM synced_sessions
                 WHERE ended_at > ? AND started_at < ?
@@ -221,6 +221,9 @@ class WorklogStore:
             ).fetchall()
 
         spans_by_project: dict[str, list[tuple[datetime, datetime]]] = defaultdict(list)
+        spans_by_worker: dict[
+            str, dict[str, list[tuple[datetime, datetime]]]
+        ] = defaultdict(lambda: defaultdict(list))
         names: dict[str, str] = {}
         machines: dict[str, set[str]] = defaultdict(set)
         sessions: dict[str, set[str]] = defaultdict(set)
@@ -232,46 +235,71 @@ class WorklogStore:
                 span_end = min(parse_iso(raw_end), end_utc)
                 if span_end > span_start:
                     spans_by_project[key].append((span_start, span_end))
+                    worker = (
+                        f'{row["machine_id"]}:{row["agent"]}:{row["session_uid"]}'
+                    )
+                    spans_by_worker[key][worker].append((span_start, span_end))
                     machines[key].add(row["machine_id"])
                     sessions[key].add(f'{row["machine_id"]}:{row["session_uid"]}')
 
         result = []
         for key, spans in spans_by_project.items():
             merged = merge_spans(spans)
-            daily: dict[str, float] = defaultdict(float)
-            for span_start, span_end in merged:
-                cursor = span_start
-                while cursor < span_end:
-                    local_cursor = cursor.astimezone(tz)
-                    next_day = datetime.combine(
-                        local_cursor.date() + timedelta(days=1), time.min, tzinfo=tz
-                    ).astimezone(timezone.utc)
-                    segment_end = min(span_end, next_day)
-                    daily[local_cursor.date().isoformat()] += (
-                        segment_end - cursor
-                    ).total_seconds()
-                    cursor = segment_end
+            daily = split_spans_by_day(merged, tz)
+            agent_daily: dict[str, float] = defaultdict(float)
+            for worker_spans in spans_by_worker[key].values():
+                for day, seconds in split_spans_by_day(
+                    merge_spans(worker_spans), tz
+                ).items():
+                    agent_daily[day] += seconds
 
             total_seconds = sum(daily.values())
+            total_agent_seconds = sum(agent_daily.values())
             result.append(
                 {
                     "project_key": key,
                     "project_name": names.get(key, key),
                     "seconds": round(total_seconds),
                     "hours": round(total_seconds / 3600, 2),
+                    "agent_seconds": round(total_agent_seconds),
+                    "agent_hours": round(total_agent_seconds / 3600, 2),
                     "machines": len(machines[key]),
                     "sessions": len(sessions[key]),
                     "daily": [
                         {
                             "date": day,
-                            "seconds": round(seconds),
-                            "hours": round(seconds / 3600, 2),
+                            "seconds": round(daily.get(day, 0)),
+                            "hours": round(daily.get(day, 0) / 3600, 2),
+                            "agent_seconds": round(agent_daily.get(day, 0)),
+                            "agent_hours": round(
+                                agent_daily.get(day, 0) / 3600, 2
+                            ),
                         }
-                        for day, seconds in sorted(daily.items())
+                        for day in sorted(daily.keys() | agent_daily.keys())
                     ],
                 }
             )
         return sorted(result, key=lambda item: (-item["seconds"], item["project_name"]))
+
+
+def split_spans_by_day(
+    spans: Iterable[tuple[datetime, datetime]], tz: ZoneInfo
+) -> dict[str, float]:
+    """Split UTC spans at local midnight and total seconds per local day."""
+    daily: dict[str, float] = defaultdict(float)
+    for span_start, span_end in spans:
+        cursor = span_start
+        while cursor < span_end:
+            local_cursor = cursor.astimezone(tz)
+            next_day = datetime.combine(
+                local_cursor.date() + timedelta(days=1), time.min, tzinfo=tz
+            ).astimezone(timezone.utc)
+            segment_end = min(span_end, next_day)
+            daily[local_cursor.date().isoformat()] += (
+                segment_end - cursor
+            ).total_seconds()
+            cursor = segment_end
+    return dict(daily)
 
 
 def merge_spans(
