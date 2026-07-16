@@ -59,7 +59,7 @@ Browse every session with full details:
 - Sync compact activity summaries from any number of workstations
 - Filter working time by project and date range
 - Copy daily durations in Jira-friendly `1h 25m` format
-- Automatically exclude idle gaps longer than 15 minutes
+- Automatically exclude idle gaps longer than 10 minutes
 - Union overlapping sessions, including sessions from different machines, so
   parallel work is not counted twice
 - Keep prompts, transcripts, source code, and tool payloads on the workstation
@@ -125,6 +125,53 @@ The API is disabled when `AGENT_DASHBOARD_TOKEN` is not configured. Do not put
 the token in a public repository or pass it in a process argument in production.
 
 ### 2. Connect each workstation
+
+#### Quick installer (recommended)
+
+Clone the repository on the new device, then run the installer from inside it:
+
+```bash
+python3 install_sync.py install
+```
+
+On native Windows use `py install_sync.py install`. The installer asks only for
+the bearer token; the production dashboard URL and machine hostname are the
+defaults. It stores the token outside the repository, runs a full historical
+sync, and installs a silent five-minute schedule:
+
+- WSL: a hidden Windows Task Scheduler launcher, so no terminal window appears
+- Native Windows: a hidden Task Scheduler launcher
+- Linux/macOS: the user's crontab
+
+Useful maintenance commands:
+
+```bash
+python3 install_sync.py status
+python3 install_sync.py run --all
+python3 install_sync.py uninstall
+```
+
+If local folder names need friendly shared names, add mappings during install:
+
+```bash
+python3 install_sync.py install \
+  --project-map local-folder="Client Project"
+```
+
+Running `install` again safely updates the configuration and replaces the
+existing scheduler entry. Prompt bodies, responses, source code, and tool
+payloads remain on the workstation.
+
+Use a friendly device name so dashboard rows are easy to identify:
+
+```bash
+python3 install_sync.py install --machine work-laptop
+```
+
+The dashboard shows the device on project, session, and worklog rows, supports
+filtering the invoice report by device, and lists each device's last sync time.
+
+#### Manual setup
 
 Set the central URL and the same secret in that machine's environment:
 
@@ -205,16 +252,25 @@ export AGENT_DASHBOARD_PROJECT_MAP='{"agent-cost-dashboard":"Work-Dashboard"}'
 ### How working time is calculated
 
 Session event timestamps act as activity heartbeats. Events separated by no
-more than 15 minutes form one work span; a longer gap starts a new span. A final
+more than 10 minutes form one work span; a longer gap starts a new span. A final
 or isolated event contributes one minute. The report unions all spans for the
 same project before totaling them, then splits them at midnight in the configured
 timezone. Change the cutoff per workstation with `--idle-minutes`.
 
-The report exposes two measures. **Wall-clock time** unions every overlapping
-span for a project. **Agent-hours** sums active time for each session, including
-agents working in parallel; this is normally the useful basis for invoicing
-agent work. The copy button exports both measures,
-billable hours, configured rate, and invoice amount as tab-separated rows.
+The report exposes three measures:
+
+- **Execution time** measures completed prompt processing. Codex uses its exact
+  `task_started` and `task_complete` markers (the same boundaries as “Worked
+  for”). Claude uses a human prompt through its final `end_turn` or
+  `stop_sequence`. Idle time between prompts is excluded.
+- **Wall-clock time** unions overlapping heartbeat spans for a project, so
+  parallel agents do not multiply elapsed time.
+- **Agent-hours** sums heartbeat spans per session, so parallel agents count
+  separately. Short gaps under the idle cutoff are included.
+
+Execution time is the default invoice basis. The copy button exports all three
+measures, prompt count, billable hours, configured rate, and invoice amount as
+tab-separated rows.
 
 This measures active agent-session time, not only model inference time. It is
 deterministic and auditable; an AI API is not required for time accounting.

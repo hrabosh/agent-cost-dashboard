@@ -44,6 +44,10 @@ def build_metrics(stats: cost_dashboard.SessionStats) -> dict:
     return {
         "messages": stats["messages"],
         "prompts": stats["prompts"],
+        "execution_time": sum(
+            max(0.0, (end - start).total_seconds())
+            for start, end in stats["execution_spans"]
+        ),
         "tokens": stats["total_tokens"],
         "input_tokens": stats["input_tokens"],
         "output_tokens": stats["output_tokens"],
@@ -140,6 +144,13 @@ def collect_sessions(
                 "project_key": canonical,
                 "project_name": canonical,
                 "activity_spans": spans,
+                "execution_spans": [
+                    [
+                        cost_dashboard.utc_iso(start),
+                        cost_dashboard.utc_iso(end),
+                    ]
+                    for start, end in stats["execution_spans"]
+                ],
                 "metrics": build_metrics(stats),
             }
         )
@@ -201,8 +212,8 @@ def main() -> int:
     parser.add_argument(
         "--idle-minutes",
         type=int,
-        default=15,
-        help="Start a new work span after this idle gap (default: 15)",
+        default=10,
+        help="Start a new work span after this idle gap (default: 10)",
     )
     parser.add_argument(
         "--project-map",

@@ -335,9 +335,11 @@ function renderProjects() {
             <tr class="expandable-row" data-target="${rowId}" onclick="toggleProjectRow('${rowId}')">
                 <td class="project-name" title="${escapeHtml(p.name)}"><span class="expand-icon">▶</span> ${escapeHtml(shortName)}</td>
                 <td>${p.sessions}</td>
+                <td>${escapeHtml(p.machine_display || 'local')}</td>
                 <td title="${formatFullNumber(p.prompts || 0)}">${formatCompactNumber(p.prompts || 0)}</td>
                 <td title="${formatFullNumber(p.messages)}">${formatCompactNumber(p.messages)}</td>
                 <td class="tokens">${tokenCellHtml(p)}</td>
+                <td style="color: var(--accent-green)">${p.execution_time_display || '0s'}</td>
                 <td style="color: var(--accent-purple)">${p.llm_time_display}</td>
                 <td style="color: var(--accent-yellow)">${p.tool_time_display}</td>
                 <td style="color: var(--accent-blue)">${(p.avg_tps || 0).toFixed(1)}</td>
@@ -345,7 +347,7 @@ function renderProjects() {
                 <td style="color: var(--text-secondary)">${p.last_activity_display}</td>
             </tr>
             <tr class="model-breakdown" id="${rowId}">
-                <td colspan="10">
+                <td colspan="12">
                     <div class="model-tree">
                         <div class="detail-line"><strong>Path:</strong> ${escapeHtml(p.name)}</div>
                         <div class="detail-line" title="${escapeHtml(tokenTitle(p))}"><strong>Tokens:</strong> ${formatCompactNumber(p.tokens)} ${tokenDetailText(p, true) ? `(${escapeHtml(tokenDetailText(p, true))})` : ''}</div>
@@ -392,6 +394,8 @@ function renderSessions() {
                 return all.reduce((sum, session) => sum + session.messages, 0);
             case 'prompts':
                 return all.reduce((sum, session) => sum + (session.prompts || 0), 0);
+            case 'execution_time':
+                return all.reduce((sum, session) => sum + (session.execution_time || 0), 0);
             case 'llm_time':
                 return all.reduce((sum, session) => sum + (session.llm_time || 0), 0);
             case 'tool_time':
@@ -410,6 +414,8 @@ function renderSessions() {
                 return s.start ? new Date(s.start).getTime() : 0;
             case 'project':
                 return s.cwd.toLowerCase();
+            case 'machine':
+                return (s.machine || 'local').toLowerCase();
             default:
                 return s[field] || 0;
         }
@@ -450,8 +456,10 @@ function renderSessions() {
             html += `
                 <tr>
                     <td class="project-name" title="${escapeHtml(s.cwd)}">${escapeHtml(shortProject)}</td>
+                    <td>${escapeHtml(s.machine || 'local')}</td>
                     <td style="color: var(--text-secondary)">${s.start_display}</td>
                     <td style="color: var(--text-secondary)">${s.duration_display}</td>
+                    <td style="color: var(--accent-green)">${s.execution_time_display || '0s'}</td>
                     <td style="color: var(--accent-purple)">${s.llm_time_display}</td>
                     <td style="color: var(--accent-yellow)">${s.tool_time_display || '0s'}</td>
                     <td style="color: var(--accent-blue)">${(s.avg_tps || 0).toFixed(1)}</td>
@@ -477,6 +485,7 @@ function renderSessions() {
         const aggTokenCounts = aggregateTokenCounts(allSessionsInGroup);
         const aggMessages = allSessionsInGroup.reduce((sum, session) => sum + session.messages, 0);
         const aggPrompts = allSessionsInGroup.reduce((sum, session) => sum + (session.prompts || 0), 0);
+        const aggExecutionTime = allSessionsInGroup.reduce((sum, session) => sum + (session.execution_time || 0), 0);
         const aggLlmTime = allSessionsInGroup.reduce((sum, session) => sum + (session.llm_time || 0), 0);
         const aggToolTime = allSessionsInGroup.reduce((sum, session) => sum + (session.tool_time || 0), 0);
 
@@ -508,8 +517,10 @@ function renderSessions() {
                     <span class="expand-icon">▶</span>
                     ${escapeHtml(shortProject)}
                 </td>
+                <td>${escapeHtml(s.machine || 'local')}</td>
                 <td style="color: var(--text-secondary)">${dateDisplay}</td>
                 <td style="color: var(--text-secondary)">${formatDuration(totalDuration)}</td>
+                <td style="color: var(--accent-green)">${formatDuration(aggExecutionTime)}</td>
                 <td style="color: var(--accent-purple)">${formatDuration(aggLlmTime)}</td>
                 <td style="color: var(--accent-yellow)">${formatDuration(aggToolTime)}</td>
                 <td style="color: var(--accent-blue)">${aggAvgTps.toFixed(1)}</td>
@@ -523,7 +534,7 @@ function renderSessions() {
                 </td>
             </tr>
             <tr class="model-breakdown" id="${projectId}">
-                <td colspan="11" style="padding: 0">
+                <td colspan="13" style="padding: 0">
                     <div class="model-tree">
                         <div class="detail-line"><strong>Path:</strong> ${escapeHtml(s.cwd)}</div>
                         <div class="detail-line"><strong>Tokens:</strong> ${formatFullNumber(aggTokenCounts.tokens)} ${tokenDetailText(aggTokenCounts) ? `(${escapeHtml(tokenDetailText(aggTokenCounts))})` : ''}</div>
@@ -537,6 +548,7 @@ function renderSessions() {
                 </span>
                 <span class="model-stat">${s.start_display}</span>
                 <span class="model-stat">${s.duration_display}</span>
+                <span class="model-stat" style="color: var(--accent-green)">${s.execution_time_display || '0s'} execution</span>
                 <span class="model-stat" style="color: var(--accent-purple)">${s.llm_time_display}</span>
                 <span class="model-stat" style="color: var(--accent-yellow)">${s.tool_time_display || '0s'}</span>
                 <span class="model-stat" style="color: var(--accent-blue)">${(s.avg_tps || 0).toFixed(1)} tok/s</span>
@@ -569,6 +581,7 @@ function renderSessions() {
                     </span>
                     <span class="model-stat">${sub.start_display}</span>
                     <span class="model-stat">${sub.duration_display}</span>
+                    <span class="model-stat" style="color: var(--accent-green)">${sub.execution_time_display || '0s'} execution</span>
                     <span class="model-stat" style="color: var(--accent-purple)">${sub.llm_time_display}</span>
                     <span class="model-stat" style="color: var(--accent-yellow)">${sub.tool_time_display || '0s'}</span>
                     <span class="model-stat" style="color: var(--accent-blue)">${(sub.avg_tps || 0).toFixed(1)} tok/s</span>
@@ -751,11 +764,11 @@ const billingIncrement = Math.max(1, Number(billing.billing_increment_minutes ||
 let visibleWorklogRows = [];
 
 function jiraDuration(seconds) {
-    const totalMinutes = Math.max(1, Math.round(seconds / 60));
+    const totalMinutes = Math.max(0, Math.round(seconds / 60));
     const hours = Math.floor(totalMinutes / 60);
     const minutes = totalMinutes % 60;
     return [hours ? `${hours}h` : '', minutes ? `${minutes}m` : '']
-        .filter(Boolean).join(' ') || '1m';
+        .filter(Boolean).join(' ') || '0m';
 }
 
 function formatMoney(value) {
@@ -771,6 +784,7 @@ function renderWorklogs() {
     const from = document.getElementById('worklog-from').value;
     const to = document.getElementById('worklog-to').value;
     const selectedProject = document.getElementById('worklog-project').value;
+    const selectedDevice = document.getElementById('worklog-device').value;
     const basis = document.getElementById('worklog-basis').value;
     visibleWorklogRows = [];
     worklogs.forEach(project => {
@@ -778,12 +792,16 @@ function renderWorklogs() {
         project.daily.forEach(day => {
             if (from && day.date < from) return;
             if (to && day.date > to) return;
+            const machineIds = day.machine_ids || project.machine_ids || [];
+            if (selectedDevice && !machineIds.includes(selectedDevice)) return;
             visibleWorklogRows.push({
                 projectKey: project.project_key,
                 project: project.project_name,
+                machineIds,
                 date: day.date,
                 seconds: day.seconds,
                 agentSeconds: day.agent_seconds || day.seconds,
+                executionSeconds: day.execution_seconds || 0,
                 prompts: day.prompts || 0,
             });
         });
@@ -793,7 +811,9 @@ function renderWorklogs() {
     );
 
     visibleWorklogRows.forEach(row => {
-        row.selectedSeconds = basis === 'agent' ? row.agentSeconds : row.seconds;
+        row.selectedSeconds = basis === 'execution'
+            ? row.executionSeconds
+            : (basis === 'agent' ? row.agentSeconds : row.seconds);
         row.billableHours = roundedBillableHours(row.selectedSeconds);
         const configuredRate = projectRates[row.projectKey] ?? projectRates[row.project];
         row.rate = configuredRate === undefined ? null : Number(configuredRate);
@@ -816,9 +836,11 @@ function renderWorklogs() {
     document.getElementById('worklog-tbody').innerHTML = visibleWorklogRows.map(row => `
         <tr>
             <td class="project-name">${escapeHtml(row.project)}</td>
+            <td>${escapeHtml(row.machineIds.join(', ') || 'unknown')}</td>
             <td>${row.date}</td>
             <td style="color: var(--accent-blue)">${jiraDuration(row.seconds)}</td>
             <td style="color: var(--accent-purple)">${jiraDuration(row.agentSeconds)}</td>
+            <td style="color: var(--accent-green)">${row.executionSeconds ? jiraDuration(row.executionSeconds) : '—'}</td>
             <td style="color: var(--accent-green)">${formatFullNumber(row.prompts)}</td>
             <td>${row.billableHours.toFixed(2)}h</td>
             <td>${row.rate === null ? '—' : formatMoney(row.rate) + '/h'}</td>
@@ -834,6 +856,7 @@ function setupWorklogs() {
     const fromInput = document.getElementById('worklog-from');
     const toInput = document.getElementById('worklog-to');
     const projectSelect = document.getElementById('worklog-project');
+    const deviceSelect = document.getElementById('worklog-device');
     const basisSelect = document.getElementById('worklog-basis');
     fromInput.value = defaults.from || '';
     toInput.value = defaults.to || '';
@@ -846,17 +869,30 @@ function setupWorklogs() {
             option.textContent = project.project_name;
             projectSelect.appendChild(option);
         });
-    [fromInput, toInput, projectSelect, basisSelect].forEach(element =>
+    const deviceNames = new Set();
+    worklogs.forEach(project =>
+        (project.machine_ids || []).forEach(machine => deviceNames.add(machine))
+    );
+    (dashboardData.syncMachines || []).forEach(item => deviceNames.add(item.machine_id));
+    [...deviceNames].sort().forEach(machine => {
+        const option = document.createElement('option');
+        option.value = machine;
+        option.textContent = machine;
+        deviceSelect.appendChild(option);
+    });
+    [fromInput, toInput, projectSelect, deviceSelect, basisSelect].forEach(element =>
         element.addEventListener('change', renderWorklogs)
     );
     document.getElementById('copy-worklog').addEventListener('click', async event => {
         if (!visibleWorklogRows.length) return;
-        const header = ['Date', 'Project', 'Wall-clock', 'Agent time', 'Prompts', 'Billable hours', 'Rate', 'Amount'];
+        const header = ['Date', 'Project', 'Device', 'Wall-clock', 'Agent time', 'Execution time', 'Prompts', 'Billable hours', 'Rate', 'Amount'];
         const lines = visibleWorklogRows.map(row => [
             row.date,
             row.project,
+            row.machineIds.join(', '),
             (row.seconds / 3600).toFixed(2),
             (row.agentSeconds / 3600).toFixed(2),
+            (row.executionSeconds / 3600).toFixed(2),
             row.prompts,
             row.billableHours.toFixed(2),
             row.rate === null ? '' : row.rate.toFixed(2),
@@ -872,12 +908,30 @@ function setupWorklogs() {
     renderWorklogs();
 }
 
+function renderDevices() {
+    const devices = dashboardData.syncMachines || [];
+    document.getElementById('devices-tbody').innerHTML = devices.map(device => {
+        const parsed = device.last_sync ? new Date(device.last_sync) : null;
+        const lastSync = parsed && !Number.isNaN(parsed.getTime())
+            ? parsed.toLocaleString()
+            : 'Never';
+        return `
+            <tr>
+                <td class="project-name">${escapeHtml(device.machine_id)}</td>
+                <td style="color: var(--text-secondary)">${escapeHtml(lastSync)}</td>
+                <td>${formatFullNumber(device.sessions || 0)}</td>
+            </tr>
+        `;
+    }).join('') || '<tr><td colspan="3" style="color: var(--text-secondary)">No devices synchronized yet.</td></tr>';
+}
+
 // Setup
 setupSorting('projects-table', projectSort, renderProjects);
 setupSorting('sessions-table', sessionsSort, renderSessions);
 setupSorting('models-table', modelSort, renderModels);
 setupSorting('tools-table', toolSort, renderTools);
 setupWorklogs();
+renderDevices();
 
 // Initial render
 renderProjects();

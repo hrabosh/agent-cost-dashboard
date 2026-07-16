@@ -8,6 +8,19 @@ from worklog_store import WorklogStore, build_activity_spans, merge_spans
 
 
 class ActivitySpanTests(unittest.TestCase):
+    def test_default_idle_cutoff_is_ten_minutes(self):
+        points = [
+            datetime(2026, 7, 15, 10, 0, tzinfo=timezone.utc),
+            datetime(2026, 7, 15, 10, 11, tzinfo=timezone.utc),
+        ]
+        self.assertEqual(
+            build_activity_spans(points),
+            [
+                ["2026-07-15T10:00:00Z", "2026-07-15T10:01:00Z"],
+                ["2026-07-15T10:11:00Z", "2026-07-15T10:12:00Z"],
+            ],
+        )
+
     def test_idle_gap_starts_a_new_span(self):
         points = [
             datetime(2026, 7, 15, 10, 0, tzinfo=timezone.utc),
@@ -82,6 +95,21 @@ class WorklogStoreTests(unittest.TestCase):
         self.assertEqual(report[0]["prompts"], 3)
         self.assertEqual(report[0]["daily"][0]["prompts"], 3)
 
+    def test_report_includes_exact_execution_time(self):
+        session = self.session(
+            "one", "2026-07-17T10:30:45Z", "2026-07-17T10:39:43Z"
+        )
+        session["execution_spans"] = [
+            ["2026-07-17T10:30:45.587Z", "2026-07-17T10:32:38.473Z"],
+            ["2026-07-17T10:35:02.035Z", "2026-07-17T10:38:43.658Z"],
+        ]
+        self.store.upsert_sessions("desktop", [session])
+        report = self.store.report(
+            date(2026, 7, 17), date(2026, 7, 17), "UTC"
+        )
+        self.assertEqual(report[0]["seconds"], 538)
+        self.assertEqual(report[0]["execution_seconds"], 335)
+
     def test_synced_statistics_populate_dashboard_aggregates(self):
         session = self.session(
             "one", "2026-07-15T10:00:00Z", "2026-07-15T11:00:00Z"
@@ -146,6 +174,7 @@ class WorklogStoreTests(unittest.TestCase):
         self.assertEqual(report[0]["seconds"], 90 * 60)
         self.assertEqual(report[0]["agent_seconds"], 2 * 60 * 60)
         self.assertEqual(report[0]["machines"], 2)
+        self.assertEqual(report[0]["machine_ids"], ["desktop", "laptop"])
         self.assertEqual(report[0]["sessions"], 2)
         self.assertEqual(
             {item["machine_id"] for item in self.store.sync_status()},
@@ -198,7 +227,10 @@ class WorklogStoreTests(unittest.TestCase):
                     "hours": 0.5,
                     "agent_seconds": 1800,
                     "agent_hours": 0.5,
+                    "execution_seconds": 0,
+                    "execution_hours": 0.0,
                     "prompts": 0,
+                    "machine_ids": ["desktop"],
                 },
                 {
                     "date": "2026-07-16",
@@ -206,7 +238,10 @@ class WorklogStoreTests(unittest.TestCase):
                     "hours": 0.5,
                     "agent_seconds": 1800,
                     "agent_hours": 0.5,
+                    "execution_seconds": 0,
+                    "execution_hours": 0.0,
                     "prompts": 0,
+                    "machine_ids": ["desktop"],
                 },
             ],
         )

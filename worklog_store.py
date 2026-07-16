@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS synced_sessions (
     started_at TEXT NOT NULL,
     ended_at TEXT NOT NULL,
     activity_spans TEXT NOT NULL,
+    execution_spans TEXT NOT NULL DEFAULT '[]',
     metrics_json TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL,
     PRIMARY KEY (machine_id, agent, session_uid)
@@ -49,7 +50,7 @@ def parse_iso(value: str) -> datetime:
 
 
 def build_activity_spans(
-    timestamps: Iterable[datetime], idle_seconds: int = 15 * 60
+    timestamps: Iterable[datetime], idle_seconds: int = 10 * 60
 ) -> list[list[str]]:
     """Turn event heartbeats into active wall-clock spans.
 
@@ -103,6 +104,12 @@ class WorklogStore:
                 "ADD COLUMN metrics_json TEXT NOT NULL DEFAULT '{}'"
             )
             connection.commit()
+        if "execution_spans" not in columns:
+            connection.execute(
+                "ALTER TABLE synced_sessions "
+                "ADD COLUMN execution_spans TEXT NOT NULL DEFAULT '[]'"
+            )
+            connection.commit()
         return connection
 
     def upsert_sessions(self, machine_id: str, sessions: list[dict]) -> int:
@@ -122,6 +129,7 @@ class WorklogStore:
                     spans[0][0],
                     spans[-1][1],
                     json.dumps(spans, separators=(",", ":")),
+                    json.dumps(item.get("execution_spans", []), separators=(",", ":")),
                     json.dumps(item.get("metrics", {}), separators=(",", ":")),
                     now,
                 )
@@ -132,14 +140,16 @@ class WorklogStore:
                 """
                 INSERT INTO synced_sessions (
                     machine_id, agent, session_uid, project_key, project_name,
-                    started_at, ended_at, activity_spans, metrics_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    started_at, ended_at, activity_spans, execution_spans,
+                    metrics_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(machine_id, agent, session_uid) DO UPDATE SET
                     project_key=excluded.project_key,
                     project_name=excluded.project_name,
                     started_at=excluded.started_at,
                     ended_at=excluded.ended_at,
                     activity_spans=excluded.activity_spans,
+                    execution_spans=excluded.execution_spans,
                     metrics_json=excluded.metrics_json,
                     updated_at=excluded.updated_at
                 """,
@@ -154,6 +164,7 @@ class WorklogStore:
                 """
                 SELECT machine_id, agent, session_uid, project_key, project_name,
                        started_at, ended_at, activity_spans, metrics_json
+                       , execution_spans
                 FROM synced_sessions
                 WHERE metrics_json != '{}'
                 ORDER BY project_name, started_at
@@ -164,6 +175,7 @@ class WorklogStore:
             item = dict(row)
             try:
                 item["activity_spans"] = json.loads(item["activity_spans"])
+                item["execution_spans"] = json.loads(item["execution_spans"])
                 item["metrics"] = json.loads(item.pop("metrics_json"))
             except (TypeError, json.JSONDecodeError):
                 continue
@@ -213,7 +225,7 @@ class WorklogStore:
             rows = connection.execute(
                 """
                 SELECT machine_id, agent, session_uid, project_key, project_name,
-                       activity_spans, metrics_json
+                       activity_spans, execution_spans, metrics_json
                 FROM synced_sessions
                 WHERE ended_at > ? AND started_at < ?
                 """,
@@ -224,14 +236,21 @@ class WorklogStore:
         spans_by_worker: dict[
             str, dict[str, list[tuple[datetime, datetime]]]
         ] = defaultdict(lambda: defaultdict(list))
+        execution_by_worker: dict[
+            str, dict[str, list[tuple[datetime, datetime]]]
+        ] = defaultdict(lambda: defaultdict(list))
         names: dict[str, str] = {}
         machines: dict[str, set[str]] = defaultdict(set)
+        machines_by_day: dict[str, dict[str, set[str]]] = defaultdict(
+            lambda: defaultdict(set)
+        )
         sessions: dict[str, set[str]] = defaultdict(set)
         prompts_by_project: dict[str, dict[str, int]] = defaultdict(
             lambda: defaultdict(int)
         )
         for row in rows:
             key = row["project_key"]
+            worker = f'{row["machine_id"]}:{row["agent"]}:{row["session_uid"]}'
             names[key] = row["project_name"]
             metrics = json.loads(row["metrics_json"] or "{}")
             for day, daily_metrics in metrics.get("daily", {}).items():
@@ -239,17 +258,22 @@ class WorklogStore:
                     prompts_by_project[key][day] += int(
                         daily_metrics.get("prompts", 0)
                     )
+                    machines_by_day[key][day].add(row["machine_id"])
             for raw_start, raw_end in json.loads(row["activity_spans"]):
                 span_start = max(parse_iso(raw_start), start_utc)
                 span_end = min(parse_iso(raw_end), end_utc)
                 if span_end > span_start:
                     spans_by_project[key].append((span_start, span_end))
-                    worker = (
-                        f'{row["machine_id"]}:{row["agent"]}:{row["session_uid"]}'
-                    )
                     spans_by_worker[key][worker].append((span_start, span_end))
                     machines[key].add(row["machine_id"])
+                    for day in split_spans_by_day([(span_start, span_end)], tz):
+                        machines_by_day[key][day].add(row["machine_id"])
                     sessions[key].add(f'{row["machine_id"]}:{row["session_uid"]}')
+            for raw_start, raw_end in json.loads(row["execution_spans"] or "[]"):
+                span_start = max(parse_iso(raw_start), start_utc)
+                span_end = min(parse_iso(raw_end), end_utc)
+                if span_end > span_start:
+                    execution_by_worker[key][worker].append((span_start, span_end))
 
         result = []
         for key, spans in spans_by_project.items():
@@ -261,9 +285,16 @@ class WorklogStore:
                     merge_spans(worker_spans), tz
                 ).items():
                     agent_daily[day] += seconds
+            execution_daily: dict[str, float] = defaultdict(float)
+            for worker_spans in execution_by_worker[key].values():
+                for day, seconds in split_spans_by_day(
+                    merge_spans(worker_spans), tz
+                ).items():
+                    execution_daily[day] += seconds
 
             total_seconds = sum(daily.values())
             total_agent_seconds = sum(agent_daily.values())
+            total_execution_seconds = sum(execution_daily.values())
             result.append(
                 {
                     "project_key": key,
@@ -272,8 +303,11 @@ class WorklogStore:
                     "hours": round(total_seconds / 3600, 2),
                     "agent_seconds": round(total_agent_seconds),
                     "agent_hours": round(total_agent_seconds / 3600, 2),
+                    "execution_seconds": round(total_execution_seconds),
+                    "execution_hours": round(total_execution_seconds / 3600, 2),
                     "prompts": sum(prompts_by_project[key].values()),
                     "machines": len(machines[key]),
+                    "machine_ids": sorted(machines[key]),
                     "sessions": len(sessions[key]),
                     "daily": [
                         {
@@ -284,11 +318,17 @@ class WorklogStore:
                             "agent_hours": round(
                                 agent_daily.get(day, 0) / 3600, 2
                             ),
+                            "execution_seconds": round(execution_daily.get(day, 0)),
+                            "execution_hours": round(
+                                execution_daily.get(day, 0) / 3600, 2
+                            ),
                             "prompts": prompts_by_project[key].get(day, 0),
+                            "machine_ids": sorted(machines_by_day[key].get(day, set())),
                         }
                         for day in sorted(
                             daily.keys()
                             | agent_daily.keys()
+                            | execution_daily.keys()
                             | prompts_by_project[key].keys()
                         )
                     ],

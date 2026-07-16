@@ -18,6 +18,9 @@ class SyncPayloadValidationTests(unittest.TestCase):
                         "activity_spans": [
                             ["2026-07-15T11:00:00+02:00", "2026-07-15T12:00:00+02:00"]
                         ],
+                        "execution_spans": [
+                            ["2026-07-15T11:05:00+02:00", "2026-07-15T11:10:00+02:00"]
+                        ],
                         "metrics": {
                             "messages": 2,
                             "prompts": 1,
@@ -57,6 +60,10 @@ class SyncPayloadValidationTests(unittest.TestCase):
         self.assertEqual(
             sessions[0]["activity_spans"],
             [["2026-07-15T09:00:00Z", "2026-07-15T10:00:00Z"]],
+        )
+        self.assertEqual(
+            sessions[0]["execution_spans"],
+            [["2026-07-15T09:05:00Z", "2026-07-15T09:10:00Z"]],
         )
         self.assertEqual(sessions[0]["metrics"]["tokens"], 30)
         self.assertEqual(sessions[0]["metrics"]["prompts"], 1)

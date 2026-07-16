@@ -48,6 +48,7 @@ class ToolStats(TypedDict):
 class DailyStats(TypedDict):
     messages: int
     prompts: int
+    execution_time: float
     cost: float
     # Per-model cost breakdown for stacked bar chart.
     # Keys are model names, values are accumulated costs.
@@ -58,6 +59,7 @@ class SessionStats(TypedDict):
     messages: int
     prompts: int
     prompt_timestamps: list[datetime]
+    execution_spans: list[tuple[datetime, datetime]]
     input_tokens: int
     output_tokens: int
     cache_read_tokens: int
@@ -83,6 +85,7 @@ class ProjectStats(TypedDict):
     sessions: list["Session"]
     total_messages: int
     total_prompts: int
+    total_execution_time: float
     total_tokens: int
     total_input_tokens: int
     total_output_tokens: int
@@ -110,6 +113,7 @@ class GlobalStats(TypedDict):
     total_reasoning_tokens: int
     total_messages: int
     total_prompts: int
+    total_execution_time: float
     total_sessions: int
     total_projects: int
     total_llm_time: float
@@ -129,8 +133,10 @@ class Session(TypedDict):
     relative_path: str
     cwd: str
     agent_cmd: str
+    machine: str
     messages: int
     prompts: int
+    execution_time: float
     tokens: int
     input_tokens: int
     output_tokens: int
@@ -168,7 +174,13 @@ def create_tool_stats() -> ToolStats:
 
 
 def create_daily_stats() -> DailyStats:
-    return {"messages": 0, "prompts": 0, "cost": 0.0, "models": {}}
+    return {
+        "messages": 0,
+        "prompts": 0,
+        "execution_time": 0.0,
+        "cost": 0.0,
+        "models": {},
+    }
 
 
 # Session directories for different agents: (path, agent_command, source_type)
@@ -807,6 +819,7 @@ def create_session_stats() -> SessionStats:
         "messages": 0,
         "prompts": 0,
         "prompt_timestamps": [],
+        "execution_spans": [],
         "input_tokens": 0,
         "output_tokens": 0,
         "cache_read_tokens": 0,
@@ -903,6 +916,7 @@ def create_project_stats(name: str, agent_cmd: str) -> ProjectStats:
         "sessions": [],
         "total_messages": 0,
         "total_prompts": 0,
+        "total_execution_time": 0.0,
         "total_tokens": 0,
         "total_input_tokens": 0,
         "total_output_tokens": 0,
@@ -929,8 +943,13 @@ def build_session_record(
     agent_cmd: str,
     duration: float,
     subagent_sessions: list[Session] | None = None,
+    machine: str = "local",
 ) -> Session:
     """Build the serializable session record used by the UI and registry."""
+    execution_time = sum(
+        max(0.0, (end - start).total_seconds())
+        for start, end in stats["execution_spans"]
+    )
     return Session(
         file=filepath.name,
         path=str(filepath),
@@ -938,8 +957,10 @@ def build_session_record(
         relative_path=relative_path,
         cwd=stats["cwd"],
         agent_cmd=agent_cmd,
+        machine=machine,
         messages=stats["messages"],
         prompts=stats["prompts"],
+        execution_time=execution_time,
         tokens=stats["total_tokens"],
         input_tokens=stats["input_tokens"],
         output_tokens=stats["output_tokens"],
@@ -983,6 +1004,10 @@ def accumulate_session_into_project(
     """Add a parsed session (or subagent session) to a project aggregate."""
     project_stats["total_messages"] += stats["messages"]
     project_stats["total_prompts"] += stats["prompts"]
+    project_stats["total_execution_time"] += sum(
+        max(0.0, (end - start).total_seconds())
+        for start, end in stats["execution_spans"]
+    )
     project_stats["total_tokens"] += stats["total_tokens"]
     project_stats["total_input_tokens"] += stats["input_tokens"]
     project_stats["total_output_tokens"] += stats["output_tokens"]
@@ -1214,6 +1239,8 @@ def analyze_claude_jsonl_file(filepath: Path) -> SessionStats:
     last_request_ts = None
     pending_tool_calls = {}  # tool_use id -> {"name": str, "timestamp": datetime}
     cwd = ""
+    execution_start = None
+    seen_prompts: set[str] = set()
 
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
@@ -1253,8 +1280,12 @@ def analyze_claude_jsonl_file(filepath: Path) -> SessionStats:
                                 and item.get("type") in ("text", "image")
                                 for item in content
                             )
-                    if is_human_prompt:
+                    prompt_key = str(data.get("promptId") or data.get("timestamp") or "")
+                    if is_human_prompt and prompt_key not in seen_prompts:
+                        seen_prompts.add(prompt_key)
                         record_prompt(stats, ts)
+                        if ts:
+                            execution_start = ts
                     if isinstance(content, list):
                         for item in content:
                             if not isinstance(item, dict):
@@ -1347,6 +1378,15 @@ def analyze_claude_jsonl_file(filepath: Path) -> SessionStats:
                                         "timestamp": ts,
                                     }
 
+                    if (
+                        execution_start
+                        and ts
+                        and ts > execution_start
+                        and msg.get("stop_reason") in ("end_turn", "stop_sequence")
+                    ):
+                        stats["execution_spans"].append((execution_start, ts))
+                        execution_start = None
+
     except Exception as e:
         print(f"Error reading Claude session {filepath}: {e}")
 
@@ -1437,6 +1477,7 @@ def analyze_codex_jsonl_file(filepath: Path) -> SessionStats:
     pending_tool_calls = {}  # call_id -> {"name": str, "timestamp": datetime}
     previous_total_usage = None
     previous_token_count_sig = None
+    execution_start = None
 
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
@@ -1465,10 +1506,19 @@ def analyze_codex_jsonl_file(filepath: Path) -> SessionStats:
                         model = payload["model"]
 
                 elif record_type == "event_msg":
-                    if payload.get("type") == "user_message":
+                    payload_type = payload.get("type")
+                    if payload_type == "task_started":
+                        execution_start = ts
+                        continue
+                    if payload_type == "task_complete":
+                        if execution_start and ts and ts > execution_start:
+                            stats["execution_spans"].append((execution_start, ts))
+                        execution_start = None
+                        continue
+                    if payload_type == "user_message":
                         record_prompt(stats, ts)
                         continue
-                    if payload.get("type") != "token_count":
+                    if payload_type != "token_count":
                         continue
 
                     info = payload.get("info")
@@ -1612,6 +1662,7 @@ def analyze_gemini_jsonl_file(filepath: Path) -> SessionStats:
             pass
 
     last_request_ts = None
+    execution_start = None
 
     try:
         with open(filepath, "r") as f:
@@ -1631,6 +1682,7 @@ def analyze_gemini_jsonl_file(filepath: Path) -> SessionStats:
                     record_prompt(stats, ts)
                     if ts:
                         last_request_ts = ts
+                        execution_start = ts
                 
                 elif record_type == "gemini":
                     model = data.get("model", "unknown")
@@ -1681,6 +1733,9 @@ def analyze_gemini_jsonl_file(filepath: Path) -> SessionStats:
                         ts=ts,
                         llm_delta=llm_delta,
                     )
+                    if execution_start and ts and ts > execution_start:
+                        stats["execution_spans"].append((execution_start, ts))
+                        execution_start = None
 
                     # Process tool calls
                     tool_calls = data.get("toolCalls", [])
@@ -1988,6 +2043,7 @@ def _accumulate_global_stats(
     global_stats["total_reasoning_tokens"] += project_stats["total_reasoning_tokens"]
     global_stats["total_messages"] += project_stats["total_messages"]
     global_stats["total_prompts"] += project_stats["total_prompts"]
+    global_stats["total_execution_time"] += project_stats["total_execution_time"]
     global_stats["total_sessions"] += len(project_stats["sessions"])
     global_stats["total_projects"] += 1
     global_stats["total_llm_time"] += project_stats["total_llm_time"]
@@ -2031,8 +2087,10 @@ def _collect_synced_projects() -> list[ProjectStats]:
                 relative_path=row["session_uid"],
                 cwd=row["project_name"],
                 agent_cmd=row["agent"],
+                machine=row["machine_id"],
                 messages=metrics["messages"],
                 prompts=metrics.get("prompts", 0),
+                execution_time=metrics.get("execution_time", 0),
                 tokens=metrics["tokens"],
                 input_tokens=metrics["input_tokens"],
                 output_tokens=metrics["output_tokens"],
@@ -2053,6 +2111,7 @@ def _collect_synced_projects() -> list[ProjectStats]:
 
         project["total_messages"] += metrics["messages"]
         project["total_prompts"] += metrics.get("prompts", 0)
+        project["total_execution_time"] += metrics.get("execution_time", 0)
         project["total_tokens"] += metrics["tokens"]
         project["total_input_tokens"] += metrics["input_tokens"]
         project["total_output_tokens"] += metrics["output_tokens"]
@@ -2101,6 +2160,7 @@ def collect_all_stats() -> tuple[list[ProjectStats], GlobalStats]:
         "total_reasoning_tokens": 0,
         "total_messages": 0,
         "total_prompts": 0,
+        "total_execution_time": 0.0,
         "total_sessions": 0,
         "total_projects": 0,
         "total_llm_time": 0.0,
@@ -2184,8 +2244,11 @@ def generate_html():
                         ],  # Keep path for resume command (local use only)
                         "relative_path": sub["relative_path"],
                         "cwd": sub["cwd"],
+                        "machine": sub["machine"],
                         "messages": sub["messages"],
                         "prompts": sub["prompts"],
+                        "execution_time": sub["execution_time"],
+                        "execution_time_display": format_duration(sub["execution_time"]),
                         "tokens": sub["tokens"],
                         "input_tokens": sub["input_tokens"],
                         "output_tokens": sub["output_tokens"],
@@ -2217,8 +2280,11 @@ def generate_html():
                     "path": s["path"],  # Keep path for resume command (local use only)
                     "relative_path": s.get("relative_path", s["file"]),
                     "cwd": s["cwd"],
+                    "machine": s["machine"],
                     "messages": s["messages"],
                     "prompts": s["prompts"],
+                    "execution_time": s["execution_time"],
+                    "execution_time_display": format_duration(s["execution_time"]),
                     "tokens": s["tokens"],
                     "input_tokens": s["input_tokens"],
                     "output_tokens": s["output_tokens"],
@@ -2297,8 +2363,14 @@ def generate_html():
                 "agent_cmd": p["agent_cmd"],  # Needed for resume command
                 "sessions": len(p["sessions"]),
                 "sessions_list": sessions_json,
+                "machines": sorted({s["machine"] for s in p["sessions"]}),
+                "machine_display": ", ".join(
+                    sorted({s["machine"] for s in p["sessions"]})
+                ),
                 "messages": p["total_messages"],
                 "prompts": p["total_prompts"],
+                "execution_time": p["total_execution_time"],
+                "execution_time_display": format_duration(p["total_execution_time"]),
                 "tokens": p["total_tokens"],
                 "input_tokens": p["total_input_tokens"],
                 "output_tokens": p["total_output_tokens"],
@@ -2405,6 +2477,12 @@ def generate_html():
         for day in project["daily"]
         if day["date"] >= today.replace(day=1).isoformat()
     )
+    month_execution_seconds = sum(
+        day["execution_seconds"]
+        for project in worklogs
+        for day in project["daily"]
+        if day["date"] >= today.replace(day=1).isoformat()
+    )
     billing = load_billing_config()
 
     dashboard_css = load_asset("dashboard.css")
@@ -2478,6 +2556,10 @@ def generate_html():
                 <div class="value" style="color: var(--accent-blue)">{month_agent_seconds / 3600:.1f}h</div>
             </div>
             <div class="stat-card">
+                <div class="label">Execution time this month</div>
+                <div class="value" style="color: var(--accent-green)">{format_duration(month_execution_seconds)}</div>
+            </div>
+            <div class="stat-card">
                 <div class="label">Wall-clock this month</div>
                 <div class="value" style="color: var(--accent-blue)">{month_seconds / 3600:.1f}h</div>
             </div>
@@ -2516,13 +2598,14 @@ def generate_html():
         <div class="section worklog-section">
             <div class="section-header">
                 <span>Invoice &amp; Worklog Report</span>
-                <span class="badge">Agent-hours count parallel agents · wall-clock removes overlap</span>
+                <span class="badge">Execution excludes idle gaps · agent-hours include activity gaps · wall-clock removes overlap</span>
             </div>
             <div class="worklog-filters">
                 <label>From <input type="date" id="worklog-from"></label>
                 <label>To <input type="date" id="worklog-to"></label>
                 <label>Project <select id="worklog-project"><option value="">All projects</option></select></label>
-                <label>Invoice using <select id="worklog-basis"><option value="agent">Agent-hours</option><option value="wall">Wall-clock</option></select></label>
+                <label>Device <select id="worklog-device"><option value="">All devices</option></select></label>
+                <label>Invoice using <select id="worklog-basis"><option value="execution">Execution time</option><option value="agent">Agent-hours</option><option value="wall">Wall-clock</option></select></label>
                 <button class="copy-btn" id="copy-worklog" type="button">Copy invoice rows</button>
                 <strong id="worklog-total">0h</strong>
             </div>
@@ -2530,9 +2613,11 @@ def generate_html():
                 <thead>
                     <tr>
                         <th>Project</th>
+                        <th>Device</th>
                         <th>Date</th>
                         <th>Wall-clock</th>
                         <th>Agent time</th>
+                        <th>Execution time</th>
                         <th>Prompts</th>
                         <th>Billable hours</th>
                         <th>Rate</th>
@@ -2542,6 +2627,23 @@ def generate_html():
                 <tbody id="worklog-tbody"></tbody>
             </table>
             <div class="empty-worklog" id="worklog-empty">No synced work in this period.</div>
+        </div>
+
+        <div class="section">
+            <div class="section-header">
+                <span>Connected Devices</span>
+                <span class="badge">{len(sync_status)} devices</span>
+            </div>
+            <table id="devices-table">
+                <thead>
+                    <tr>
+                        <th>Device</th>
+                        <th>Last synchronization</th>
+                        <th>Stored sessions</th>
+                    </tr>
+                </thead>
+                <tbody id="devices-tbody"></tbody>
+            </table>
         </div>
 
         <div class="section">
@@ -2606,9 +2708,11 @@ def generate_html():
                     <tr>
                         <th data-sort="name">Project <span class="sort-icon">▼</span></th>
                         <th data-sort="sessions">Sessions <span class="sort-icon">▼</span></th>
+                        <th data-sort="machine_display">Devices <span class="sort-icon">▼</span></th>
                         <th data-sort="prompts">Prompts <span class="sort-icon">▼</span></th>
                         <th data-sort="messages">Messages <span class="sort-icon">▼</span></th>
                         <th data-sort="tokens">Tokens <span class="sort-icon">▼</span></th>
+                        <th data-sort="execution_time">Execution <span class="sort-icon">▼</span></th>
                         <th data-sort="llm_time">LLM Time <span class="sort-icon">▼</span></th>
                         <th data-sort="tool_time">Tool Time <span class="sort-icon">▼</span></th>
                         <th data-sort="avg_tps">Tok/s <span class="sort-icon">▼</span></th>
@@ -2630,8 +2734,10 @@ def generate_html():
                 <thead>
                     <tr>
                         <th data-sort="project">Project / Session <span class="sort-icon">▼</span></th>
+                        <th data-sort="machine">Device <span class="sort-icon">▼</span></th>
                         <th data-sort="start">Date <span class="sort-icon">▼</span></th>
                         <th data-sort="duration">Duration <span class="sort-icon">▼</span></th>
+                        <th data-sort="execution_time">Execution <span class="sort-icon">▼</span></th>
                         <th data-sort="llm_time">LLM Time <span class="sort-icon">▼</span></th>
                         <th data-sort="tool_time">Tool Time <span class="sort-icon">▼</span></th>
                         <th data-sort="avg_tps">Tok/s <span class="sort-icon">▼</span></th>
@@ -2718,6 +2824,28 @@ def validate_sync_payload(payload: object) -> tuple[str, list[dict]]:
             spans.append([utc_iso(start), utc_iso(end)])
         spans.sort(key=lambda span: span[0])
         clean["activity_spans"] = spans
+        raw_execution_spans = item.get("execution_spans", [])
+        if not isinstance(raw_execution_spans, list) or len(raw_execution_spans) > 10000:
+            raise ValueError(f"sessions[{index}].execution_spans is invalid")
+        execution_spans = []
+        for span_index, span in enumerate(raw_execution_spans):
+            if not isinstance(span, list) or len(span) != 2:
+                raise ValueError(
+                    f"sessions[{index}].execution_spans[{span_index}] is invalid"
+                )
+            try:
+                start, end = parse_iso(span[0]), parse_iso(span[1])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"sessions[{index}].execution_spans[{span_index}] has invalid timestamps"
+                ) from exc
+            if end <= start:
+                raise ValueError(
+                    f"sessions[{index}].execution_spans[{span_index}] ends before it starts"
+                )
+            execution_spans.append([utc_iso(start), utc_iso(end)])
+        execution_spans.sort(key=lambda span: span[0])
+        clean["execution_spans"] = execution_spans
         clean["metrics"] = validate_session_metrics(
             item.get("metrics", {}), f"sessions[{index}].metrics"
         )
@@ -2755,7 +2883,7 @@ def validate_session_metrics(value: object, path: str) -> dict:
         "cache_write_tokens",
         "reasoning_tokens",
     )
-    float_fields = ("cost", "llm_time", "tool_time", "avg_tps")
+    float_fields = ("cost", "llm_time", "tool_time", "execution_time", "avg_tps")
     for field in integer_fields:
         clean[field] = _metric_number(
             value.get(field, 0), f"{path}.{field}", integer=True
