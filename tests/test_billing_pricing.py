@@ -24,6 +24,12 @@ class PricingTests(unittest.TestCase):
 
 
 class BillingConfigTests(unittest.TestCase):
+    def test_deployment_defaults_to_tax_included_subscriptions(self):
+        with patch.dict(os.environ, {}, clear=True):
+            config = cost_dashboard.load_billing_config()
+        self.assertEqual(config["currency"], "USD")
+        self.assertEqual(config["monthly_subscription_cost"], 50)
+
     def test_loads_subscriptions_rates_and_rounding(self):
         values = {
             "AGENT_DASHBOARD_CURRENCY": "EUR",

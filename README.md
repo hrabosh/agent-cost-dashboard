@@ -179,6 +179,12 @@ Replace the zero subscription amounts and example rates with the amounts you
 pay and invoice. The billing increment is in minutes and rounds each daily
 project row upward; it defaults to one minute.
 
+This deployment defaults to USD 25/month for Codex and USD 25/month for Claude,
+both tax included. `AGENT_DASHBOARD_SUBSCRIPTIONS` overrides those defaults.
+
+Only prompt counts and timestamps are synchronized. Prompt text, responses,
+source code, tool payloads, and attachments remain on the workstation.
+
 ### Project names across computers
 
 Folder basenames are the default shared project names. If the same project uses

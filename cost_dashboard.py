@@ -47,6 +47,7 @@ class ToolStats(TypedDict):
 
 class DailyStats(TypedDict):
     messages: int
+    prompts: int
     cost: float
     # Per-model cost breakdown for stacked bar chart.
     # Keys are model names, values are accumulated costs.
@@ -55,6 +56,8 @@ class DailyStats(TypedDict):
 
 class SessionStats(TypedDict):
     messages: int
+    prompts: int
+    prompt_timestamps: list[datetime]
     input_tokens: int
     output_tokens: int
     cache_read_tokens: int
@@ -79,6 +82,7 @@ class ProjectStats(TypedDict):
     agent_cmd: str
     sessions: list["Session"]
     total_messages: int
+    total_prompts: int
     total_tokens: int
     total_input_tokens: int
     total_output_tokens: int
@@ -105,6 +109,7 @@ class GlobalStats(TypedDict):
     total_cache_write_tokens: int
     total_reasoning_tokens: int
     total_messages: int
+    total_prompts: int
     total_sessions: int
     total_projects: int
     total_llm_time: float
@@ -125,6 +130,7 @@ class Session(TypedDict):
     cwd: str
     agent_cmd: str
     messages: int
+    prompts: int
     tokens: int
     input_tokens: int
     output_tokens: int
@@ -162,7 +168,7 @@ def create_tool_stats() -> ToolStats:
 
 
 def create_daily_stats() -> DailyStats:
-    return {"messages": 0, "cost": 0.0, "models": {}}
+    return {"messages": 0, "prompts": 0, "cost": 0.0, "models": {}}
 
 
 # Session directories for different agents: (path, agent_command, source_type)
@@ -192,7 +198,15 @@ def load_billing_config() -> dict:
     currency = os.environ.get("AGENT_DASHBOARD_CURRENCY", "USD").strip() or "USD"
 
     subscriptions = []
-    raw_subscriptions = os.environ.get("AGENT_DASHBOARD_SUBSCRIPTIONS", "")
+    raw_subscriptions = os.environ.get(
+        "AGENT_DASHBOARD_SUBSCRIPTIONS",
+        json.dumps(
+            {
+                "openai": {"name": "Codex subscription (tax included)", "monthly_cost": 25},
+                "anthropic": {"name": "Claude subscription (tax included)", "monthly_cost": 25},
+            }
+        ),
+    )
     if raw_subscriptions:
         try:
             loaded = json.loads(raw_subscriptions)
@@ -791,6 +805,8 @@ def create_session_stats() -> SessionStats:
     """Create a zeroed stats record for one session file."""
     return {
         "messages": 0,
+        "prompts": 0,
+        "prompt_timestamps": [],
         "input_tokens": 0,
         "output_tokens": 0,
         "cache_read_tokens": 0,
@@ -819,6 +835,14 @@ def _record_timestamp(stats: SessionStats, ts: datetime | None) -> None:
         stats["start"] = ts
     if stats["end"] is None or ts > stats["end"]:
         stats["end"] = ts
+
+
+def record_prompt(stats: SessionStats, ts: datetime | None) -> None:
+    """Count a human prompt without retaining or uploading its text."""
+    stats["prompts"] += 1
+    if ts:
+        stats["prompt_timestamps"].append(ts)
+    _record_timestamp(stats, ts)
 
 
 def record_llm_usage(
@@ -878,6 +902,7 @@ def create_project_stats(name: str, agent_cmd: str) -> ProjectStats:
         "agent_cmd": agent_cmd,
         "sessions": [],
         "total_messages": 0,
+        "total_prompts": 0,
         "total_tokens": 0,
         "total_input_tokens": 0,
         "total_output_tokens": 0,
@@ -914,6 +939,7 @@ def build_session_record(
         cwd=stats["cwd"],
         agent_cmd=agent_cmd,
         messages=stats["messages"],
+        prompts=stats["prompts"],
         tokens=stats["total_tokens"],
         input_tokens=stats["input_tokens"],
         output_tokens=stats["output_tokens"],
@@ -956,6 +982,7 @@ def accumulate_session_into_project(
 ) -> None:
     """Add a parsed session (or subagent session) to a project aggregate."""
     project_stats["total_messages"] += stats["messages"]
+    project_stats["total_prompts"] += stats["prompts"]
     project_stats["total_tokens"] += stats["total_tokens"]
     project_stats["total_input_tokens"] += stats["input_tokens"]
     project_stats["total_output_tokens"] += stats["output_tokens"]
@@ -982,6 +1009,9 @@ def accumulate_session_into_project(
         project_stats["daily_stats"][day_key]["models"][mdl] = (
             project_stats["daily_stats"][day_key]["models"].get(mdl, 0.0) + cost
         )
+
+    for ts in stats["prompt_timestamps"]:
+        project_stats["daily_stats"][ts.strftime("%Y-%m-%d")]["prompts"] += 1
 
     if stats["start"]:
         if (
@@ -1136,6 +1166,7 @@ def analyze_jsonl_file(filepath: Path) -> SessionStats:
                                             }
 
                     elif role == "user":
+                        record_prompt(stats, ts)
                         if ts:
                             last_request_ts = ts
 
@@ -1212,6 +1243,18 @@ def analyze_claude_jsonl_file(filepath: Path) -> SessionStats:
                     # Check for tool_result in user message content
                     msg = data.get("message", {})
                     content = msg.get("content", [])
+                    is_human_prompt = False
+                    if not data.get("isMeta") and not data.get("isSidechain"):
+                        if isinstance(content, str):
+                            is_human_prompt = bool(content.strip())
+                        elif isinstance(content, list):
+                            is_human_prompt = any(
+                                isinstance(item, dict)
+                                and item.get("type") in ("text", "image")
+                                for item in content
+                            )
+                    if is_human_prompt:
+                        record_prompt(stats, ts)
                     if isinstance(content, list):
                         for item in content:
                             if not isinstance(item, dict):
@@ -1422,6 +1465,9 @@ def analyze_codex_jsonl_file(filepath: Path) -> SessionStats:
                         model = payload["model"]
 
                 elif record_type == "event_msg":
+                    if payload.get("type") == "user_message":
+                        record_prompt(stats, ts)
+                        continue
                     if payload.get("type") != "token_count":
                         continue
 
@@ -1582,6 +1628,7 @@ def analyze_gemini_jsonl_file(filepath: Path) -> SessionStats:
                 _record_timestamp(stats, ts)
 
                 if record_type == "user":
+                    record_prompt(stats, ts)
                     if ts:
                         last_request_ts = ts
                 
@@ -1940,6 +1987,7 @@ def _accumulate_global_stats(
     global_stats["total_cache_write_tokens"] += project_stats["total_cache_write_tokens"]
     global_stats["total_reasoning_tokens"] += project_stats["total_reasoning_tokens"]
     global_stats["total_messages"] += project_stats["total_messages"]
+    global_stats["total_prompts"] += project_stats["total_prompts"]
     global_stats["total_sessions"] += len(project_stats["sessions"])
     global_stats["total_projects"] += 1
     global_stats["total_llm_time"] += project_stats["total_llm_time"]
@@ -1951,6 +1999,7 @@ def _accumulate_global_stats(
 
     for day, dstats in project_stats["daily_stats"].items():
         global_stats["daily_stats"][day]["messages"] += dstats["messages"]
+        global_stats["daily_stats"][day]["prompts"] += dstats["prompts"]
         global_stats["daily_stats"][day]["cost"] += dstats["cost"]
         for mdl, mcost in dstats.get("models", {}).items():
             global_stats["daily_stats"][day]["models"][
@@ -1983,6 +2032,7 @@ def _collect_synced_projects() -> list[ProjectStats]:
                 cwd=row["project_name"],
                 agent_cmd=row["agent"],
                 messages=metrics["messages"],
+                prompts=metrics.get("prompts", 0),
                 tokens=metrics["tokens"],
                 input_tokens=metrics["input_tokens"],
                 output_tokens=metrics["output_tokens"],
@@ -2002,6 +2052,7 @@ def _collect_synced_projects() -> list[ProjectStats]:
         )
 
         project["total_messages"] += metrics["messages"]
+        project["total_prompts"] += metrics.get("prompts", 0)
         project["total_tokens"] += metrics["tokens"]
         project["total_input_tokens"] += metrics["input_tokens"]
         project["total_output_tokens"] += metrics["output_tokens"]
@@ -2023,6 +2074,7 @@ def _collect_synced_projects() -> list[ProjectStats]:
         for day, source in metrics["daily"].items():
             target = project["daily_stats"][day]
             target["messages"] += source["messages"]
+            target["prompts"] += source.get("prompts", 0)
             target["cost"] += source["cost"]
             for model, cost in source["models"].items():
                 target["models"][model] = target["models"].get(model, 0.0) + cost
@@ -2048,6 +2100,7 @@ def collect_all_stats() -> tuple[list[ProjectStats], GlobalStats]:
         "total_cache_write_tokens": 0,
         "total_reasoning_tokens": 0,
         "total_messages": 0,
+        "total_prompts": 0,
         "total_sessions": 0,
         "total_projects": 0,
         "total_llm_time": 0.0,
@@ -2132,6 +2185,7 @@ def generate_html():
                         "relative_path": sub["relative_path"],
                         "cwd": sub["cwd"],
                         "messages": sub["messages"],
+                        "prompts": sub["prompts"],
                         "tokens": sub["tokens"],
                         "input_tokens": sub["input_tokens"],
                         "output_tokens": sub["output_tokens"],
@@ -2164,6 +2218,7 @@ def generate_html():
                     "relative_path": s.get("relative_path", s["file"]),
                     "cwd": s["cwd"],
                     "messages": s["messages"],
+                    "prompts": s["prompts"],
                     "tokens": s["tokens"],
                     "input_tokens": s["input_tokens"],
                     "output_tokens": s["output_tokens"],
@@ -2243,6 +2298,7 @@ def generate_html():
                 "sessions": len(p["sessions"]),
                 "sessions_list": sessions_json,
                 "messages": p["total_messages"],
+                "prompts": p["total_prompts"],
                 "tokens": p["total_tokens"],
                 "input_tokens": p["total_input_tokens"],
                 "output_tokens": p["total_output_tokens"],
@@ -2274,6 +2330,7 @@ def generate_html():
         daily_stats_list.append(
             {
                 "day": day,
+                "prompts": day_data["prompts"],
                 "cost": day_data["cost"],
                 "models": day_data.get("models", {}),
             }
@@ -2436,6 +2493,10 @@ def generate_html():
                 <div class="label">LLM Calls</div>
                 <div class="value" title="{format_full_number(global_stats["total_messages"])}">{format_tokens(global_stats["total_messages"])}</div>
             </div>
+            <div class="stat-card">
+                <div class="label">Human Prompts</div>
+                <div class="value" style="color: var(--accent-green)" title="{format_full_number(global_stats["total_prompts"])}">{format_tokens(global_stats["total_prompts"])}</div>
+            </div>
             {token_summary_card}
             <div class="stat-card">
                 <div class="label">LLM Time</div>
@@ -2472,6 +2533,7 @@ def generate_html():
                         <th>Date</th>
                         <th>Wall-clock</th>
                         <th>Agent time</th>
+                        <th>Prompts</th>
                         <th>Billable hours</th>
                         <th>Rate</th>
                         <th>Amount</th>
@@ -2544,6 +2606,7 @@ def generate_html():
                     <tr>
                         <th data-sort="name">Project <span class="sort-icon">▼</span></th>
                         <th data-sort="sessions">Sessions <span class="sort-icon">▼</span></th>
+                        <th data-sort="prompts">Prompts <span class="sort-icon">▼</span></th>
                         <th data-sort="messages">Messages <span class="sort-icon">▼</span></th>
                         <th data-sort="tokens">Tokens <span class="sort-icon">▼</span></th>
                         <th data-sort="llm_time">LLM Time <span class="sort-icon">▼</span></th>
@@ -2572,6 +2635,7 @@ def generate_html():
                         <th data-sort="llm_time">LLM Time <span class="sort-icon">▼</span></th>
                         <th data-sort="tool_time">Tool Time <span class="sort-icon">▼</span></th>
                         <th data-sort="avg_tps">Tok/s <span class="sort-icon">▼</span></th>
+                        <th data-sort="prompts">Prompts <span class="sort-icon">▼</span></th>
                         <th data-sort="messages">Messages <span class="sort-icon">▼</span></th>
                         <th data-sort="tokens">Tokens <span class="sort-icon">▼</span></th>
                         <th data-sort="cost">API equivalent <span class="sort-icon">▼</span></th>
@@ -2683,6 +2747,7 @@ def validate_session_metrics(value: object, path: str) -> dict:
     clean: dict = {}
     integer_fields = (
         "messages",
+        "prompts",
         "tokens",
         "input_tokens",
         "output_tokens",
@@ -2760,6 +2825,11 @@ def validate_session_metrics(value: object, path: str) -> dict:
             "messages": _metric_number(
                 stats.get("messages", 0),
                 f"{path}.daily[{day!r}].messages",
+                integer=True,
+            ),
+            "prompts": _metric_number(
+                stats.get("prompts", 0),
+                f"{path}.daily[{day!r}].prompts",
                 integer=True,
             ),
             "cost": _metric_number(

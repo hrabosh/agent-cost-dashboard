@@ -213,7 +213,7 @@ class WorklogStore:
             rows = connection.execute(
                 """
                 SELECT machine_id, agent, session_uid, project_key, project_name,
-                       activity_spans
+                       activity_spans, metrics_json
                 FROM synced_sessions
                 WHERE ended_at > ? AND started_at < ?
                 """,
@@ -227,9 +227,18 @@ class WorklogStore:
         names: dict[str, str] = {}
         machines: dict[str, set[str]] = defaultdict(set)
         sessions: dict[str, set[str]] = defaultdict(set)
+        prompts_by_project: dict[str, dict[str, int]] = defaultdict(
+            lambda: defaultdict(int)
+        )
         for row in rows:
             key = row["project_key"]
             names[key] = row["project_name"]
+            metrics = json.loads(row["metrics_json"] or "{}")
+            for day, daily_metrics in metrics.get("daily", {}).items():
+                if start_date.isoformat() <= day <= end_date.isoformat():
+                    prompts_by_project[key][day] += int(
+                        daily_metrics.get("prompts", 0)
+                    )
             for raw_start, raw_end in json.loads(row["activity_spans"]):
                 span_start = max(parse_iso(raw_start), start_utc)
                 span_end = min(parse_iso(raw_end), end_utc)
@@ -263,6 +272,7 @@ class WorklogStore:
                     "hours": round(total_seconds / 3600, 2),
                     "agent_seconds": round(total_agent_seconds),
                     "agent_hours": round(total_agent_seconds / 3600, 2),
+                    "prompts": sum(prompts_by_project[key].values()),
                     "machines": len(machines[key]),
                     "sessions": len(sessions[key]),
                     "daily": [
@@ -274,8 +284,13 @@ class WorklogStore:
                             "agent_hours": round(
                                 agent_daily.get(day, 0) / 3600, 2
                             ),
+                            "prompts": prompts_by_project[key].get(day, 0),
                         }
-                        for day in sorted(daily.keys() | agent_daily.keys())
+                        for day in sorted(
+                            daily.keys()
+                            | agent_daily.keys()
+                            | prompts_by_project[key].keys()
+                        )
                     ],
                 }
             )

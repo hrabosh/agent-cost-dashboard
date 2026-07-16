@@ -27,13 +27,23 @@ def build_metrics(stats: cost_dashboard.SessionStats) -> dict:
     daily: dict[str, dict] = {}
     for timestamp, model, cost in stats["cost_events"]:
         day = timestamp.date().isoformat()
-        row = daily.setdefault(day, {"messages": 0, "cost": 0.0, "models": {}})
+        row = daily.setdefault(
+            day, {"messages": 0, "prompts": 0, "cost": 0.0, "models": {}}
+        )
         row["messages"] += 1
         row["cost"] += cost
         row["models"][model] = row["models"].get(model, 0.0) + cost
 
+    for timestamp in stats["prompt_timestamps"]:
+        day = timestamp.date().isoformat()
+        row = daily.setdefault(
+            day, {"messages": 0, "prompts": 0, "cost": 0.0, "models": {}}
+        )
+        row["prompts"] += 1
+
     return {
         "messages": stats["messages"],
+        "prompts": stats["prompts"],
         "tokens": stats["total_tokens"],
         "input_tokens": stats["input_tokens"],
         "output_tokens": stats["output_tokens"],

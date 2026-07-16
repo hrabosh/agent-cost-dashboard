@@ -335,6 +335,7 @@ function renderProjects() {
             <tr class="expandable-row" data-target="${rowId}" onclick="toggleProjectRow('${rowId}')">
                 <td class="project-name" title="${escapeHtml(p.name)}"><span class="expand-icon">▶</span> ${escapeHtml(shortName)}</td>
                 <td>${p.sessions}</td>
+                <td title="${formatFullNumber(p.prompts || 0)}">${formatCompactNumber(p.prompts || 0)}</td>
                 <td title="${formatFullNumber(p.messages)}">${formatCompactNumber(p.messages)}</td>
                 <td class="tokens">${tokenCellHtml(p)}</td>
                 <td style="color: var(--accent-purple)">${p.llm_time_display}</td>
@@ -344,7 +345,7 @@ function renderProjects() {
                 <td style="color: var(--text-secondary)">${p.last_activity_display}</td>
             </tr>
             <tr class="model-breakdown" id="${rowId}">
-                <td colspan="9">
+                <td colspan="10">
                     <div class="model-tree">
                         <div class="detail-line"><strong>Path:</strong> ${escapeHtml(p.name)}</div>
                         <div class="detail-line" title="${escapeHtml(tokenTitle(p))}"><strong>Tokens:</strong> ${formatCompactNumber(p.tokens)} ${tokenDetailText(p, true) ? `(${escapeHtml(tokenDetailText(p, true))})` : ''}</div>
@@ -389,6 +390,8 @@ function renderSessions() {
                 return all.reduce((sum, session) => sum + session.tokens, 0);
             case 'messages':
                 return all.reduce((sum, session) => sum + session.messages, 0);
+            case 'prompts':
+                return all.reduce((sum, session) => sum + (session.prompts || 0), 0);
             case 'llm_time':
                 return all.reduce((sum, session) => sum + (session.llm_time || 0), 0);
             case 'tool_time':
@@ -452,6 +455,7 @@ function renderSessions() {
                     <td style="color: var(--accent-purple)">${s.llm_time_display}</td>
                     <td style="color: var(--accent-yellow)">${s.tool_time_display || '0s'}</td>
                     <td style="color: var(--accent-blue)">${(s.avg_tps || 0).toFixed(1)}</td>
+                    <td title="${formatFullNumber(s.prompts || 0)}">${formatCompactNumber(s.prompts || 0)}</td>
                     <td title="${formatFullNumber(s.messages)}">${formatCompactNumber(s.messages)}</td>
                     <td class="tokens">${tokenCellHtml(s)}</td>
                     <td class="cost">$${s.cost.toFixed(2)}</td>
@@ -472,6 +476,7 @@ function renderSessions() {
         const aggCost = allSessionsInGroup.reduce((sum, session) => sum + session.cost, 0);
         const aggTokenCounts = aggregateTokenCounts(allSessionsInGroup);
         const aggMessages = allSessionsInGroup.reduce((sum, session) => sum + session.messages, 0);
+        const aggPrompts = allSessionsInGroup.reduce((sum, session) => sum + (session.prompts || 0), 0);
         const aggLlmTime = allSessionsInGroup.reduce((sum, session) => sum + (session.llm_time || 0), 0);
         const aggToolTime = allSessionsInGroup.reduce((sum, session) => sum + (session.tool_time || 0), 0);
 
@@ -508,6 +513,7 @@ function renderSessions() {
                 <td style="color: var(--accent-purple)">${formatDuration(aggLlmTime)}</td>
                 <td style="color: var(--accent-yellow)">${formatDuration(aggToolTime)}</td>
                 <td style="color: var(--accent-blue)">${aggAvgTps.toFixed(1)}</td>
+                <td title="${formatFullNumber(aggPrompts)}">${formatCompactNumber(aggPrompts)}</td>
                 <td title="${formatFullNumber(aggMessages)}">${formatCompactNumber(aggMessages)}</td>
                 <td class="tokens">${tokenCellHtml(aggTokenCounts)}</td>
                 <td class="cost">$${aggCost.toFixed(2)}</td>
@@ -517,7 +523,7 @@ function renderSessions() {
                 </td>
             </tr>
             <tr class="model-breakdown" id="${projectId}">
-                <td colspan="10" style="padding: 0">
+                <td colspan="11" style="padding: 0">
                     <div class="model-tree">
                         <div class="detail-line"><strong>Path:</strong> ${escapeHtml(s.cwd)}</div>
                         <div class="detail-line"><strong>Tokens:</strong> ${formatFullNumber(aggTokenCounts.tokens)} ${tokenDetailText(aggTokenCounts) ? `(${escapeHtml(tokenDetailText(aggTokenCounts))})` : ''}</div>
@@ -534,6 +540,7 @@ function renderSessions() {
                 <span class="model-stat" style="color: var(--accent-purple)">${s.llm_time_display}</span>
                 <span class="model-stat" style="color: var(--accent-yellow)">${s.tool_time_display || '0s'}</span>
                 <span class="model-stat" style="color: var(--accent-blue)">${(s.avg_tps || 0).toFixed(1)} tok/s</span>
+                <span class="model-stat">${formatFullNumber(s.prompts || 0)} prompts</span>
                 <span class="model-stat">${formatFullNumber(s.messages)} msgs</span>
                 <span class="model-stat token-wide" title="${escapeHtml(tokenTitle(s))}">${formatFullNumber(s.tokens)} tok</span>
                 <span class="model-stat token-detail-wide">${escapeHtml(tokenDetailText(s))}</span>
@@ -565,6 +572,7 @@ function renderSessions() {
                     <span class="model-stat" style="color: var(--accent-purple)">${sub.llm_time_display}</span>
                     <span class="model-stat" style="color: var(--accent-yellow)">${sub.tool_time_display || '0s'}</span>
                     <span class="model-stat" style="color: var(--accent-blue)">${(sub.avg_tps || 0).toFixed(1)} tok/s</span>
+                    <span class="model-stat">${formatFullNumber(sub.prompts || 0)} prompts</span>
                     <span class="model-stat">${formatFullNumber(sub.messages)} msgs</span>
                     <span class="model-stat token-wide" title="${escapeHtml(tokenTitle(sub))}">${formatFullNumber(sub.tokens)} tok</span>
                     <span class="model-stat token-detail-wide">${escapeHtml(tokenDetailText(sub))}</span>
@@ -776,6 +784,7 @@ function renderWorklogs() {
                 date: day.date,
                 seconds: day.seconds,
                 agentSeconds: day.agent_seconds || day.seconds,
+                prompts: day.prompts || 0,
             });
         });
     });
@@ -810,6 +819,7 @@ function renderWorklogs() {
             <td>${row.date}</td>
             <td style="color: var(--accent-blue)">${jiraDuration(row.seconds)}</td>
             <td style="color: var(--accent-purple)">${jiraDuration(row.agentSeconds)}</td>
+            <td style="color: var(--accent-green)">${formatFullNumber(row.prompts)}</td>
             <td>${row.billableHours.toFixed(2)}h</td>
             <td>${row.rate === null ? '—' : formatMoney(row.rate) + '/h'}</td>
             <td class="cost">${row.amount === null ? '—' : formatMoney(row.amount)}</td>
@@ -841,12 +851,13 @@ function setupWorklogs() {
     );
     document.getElementById('copy-worklog').addEventListener('click', async event => {
         if (!visibleWorklogRows.length) return;
-        const header = ['Date', 'Project', 'Wall-clock', 'Agent time', 'Billable hours', 'Rate', 'Amount'];
+        const header = ['Date', 'Project', 'Wall-clock', 'Agent time', 'Prompts', 'Billable hours', 'Rate', 'Amount'];
         const lines = visibleWorklogRows.map(row => [
             row.date,
             row.project,
             (row.seconds / 3600).toFixed(2),
             (row.agentSeconds / 3600).toFixed(2),
+            row.prompts,
             row.billableHours.toFixed(2),
             row.rate === null ? '' : row.rate.toFixed(2),
             row.amount === null ? '' : row.amount.toFixed(2),

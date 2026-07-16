@@ -20,6 +20,7 @@ class SyncPayloadValidationTests(unittest.TestCase):
                         ],
                         "metrics": {
                             "messages": 2,
+                            "prompts": 1,
                             "tokens": 30,
                             "input_tokens": 10,
                             "output_tokens": 5,
@@ -41,6 +42,7 @@ class SyncPayloadValidationTests(unittest.TestCase):
                             "daily": {
                                 "2026-07-15": {
                                     "messages": 2,
+                                    "prompts": 1,
                                     "cost": 0.25,
                                     "models": {"gpt-test": 0.25},
                                 }
@@ -57,6 +59,8 @@ class SyncPayloadValidationTests(unittest.TestCase):
             [["2026-07-15T09:00:00Z", "2026-07-15T10:00:00Z"]],
         )
         self.assertEqual(sessions[0]["metrics"]["tokens"], 30)
+        self.assertEqual(sessions[0]["metrics"]["prompts"], 1)
+        self.assertEqual(sessions[0]["metrics"]["daily"]["2026-07-15"]["prompts"], 1)
         self.assertEqual(sessions[0]["metrics"]["models"]["gpt-test"]["cost"], 0.25)
 
     def test_rejects_negative_metrics(self):
