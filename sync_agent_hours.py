@@ -22,6 +22,34 @@ from worklog_store import build_activity_spans
 DEFAULT_URL = "https://work.hrabovskyjan.cz/api/v1/sessions"
 
 
+def build_metrics(stats: cost_dashboard.SessionStats) -> dict:
+    """Build a privacy-safe, pre-calculated summary for the central dashboard."""
+    daily: dict[str, dict] = {}
+    for timestamp, model, cost in stats["cost_events"]:
+        day = timestamp.date().isoformat()
+        row = daily.setdefault(day, {"messages": 0, "cost": 0.0, "models": {}})
+        row["messages"] += 1
+        row["cost"] += cost
+        row["models"][model] = row["models"].get(model, 0.0) + cost
+
+    return {
+        "messages": stats["messages"],
+        "tokens": stats["total_tokens"],
+        "input_tokens": stats["input_tokens"],
+        "output_tokens": stats["output_tokens"],
+        "cache_read_tokens": stats["cache_read_tokens"],
+        "cache_write_tokens": stats["cache_write_tokens"],
+        "reasoning_tokens": stats["reasoning_tokens"],
+        "cost": stats["cost_total"],
+        "llm_time": stats["llm_time"],
+        "tool_time": stats["tool_time"],
+        "avg_tps": cost_dashboard.calc_avg_tokens_per_sec(stats["tps_samples"]),
+        "models": dict(stats["models"]),
+        "tools": dict(stats["tools"]),
+        "daily": daily,
+    }
+
+
 def project_name_from_path(value: str) -> str:
     clean = value.rstrip("/\\")
     return re.split(r"[/\\]", clean)[-1] if clean else "unknown"
@@ -102,6 +130,7 @@ def collect_sessions(
                 "project_key": canonical,
                 "project_name": canonical,
                 "activity_spans": spans,
+                "metrics": build_metrics(stats),
             }
         )
     return sessions

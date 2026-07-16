@@ -437,6 +437,10 @@ function renderSessions() {
             const sessionUrl = '/session?uid=' + encodeURIComponent(s.uid);
             const resumePath = s.path.replace(/\\\\/g, '/');
             const resumeCmd = buildResumeCmd(s.agent_cmd, s.cwd, resumePath, s.uid);
+            const actions = s.is_synced
+                ? '<span style="color: var(--text-secondary)">Synced</span>'
+                : `<button onclick="copyResumeCommand(event, this.dataset.resumeCmd)" data-resume-cmd="${escapeHtml(resumeCmd)}" class="icon-btn" title="Copy resume command">Copy</button>
+                   <a href="${sessionUrl}" class="session-link" target="_blank" title="View full session">Open →</a>`;
             const sessionName = displayNameFromPath(s.cwd);
             const shortProject = sessionName.length > 40 ? sessionName.slice(0, 37) + '...' : sessionName;
 
@@ -452,8 +456,7 @@ function renderSessions() {
                     <td class="tokens">${tokenCellHtml(s)}</td>
                     <td class="cost">$${s.cost.toFixed(2)}</td>
                     <td>
-                        <button onclick="copyResumeCommand(event, this.dataset.resumeCmd)" data-resume-cmd="${escapeHtml(resumeCmd)}" class="icon-btn" title="Copy resume command">Copy</button>
-                        <a href="${sessionUrl}" class="session-link" target="_blank" title="View full session">Open →</a>
+                        ${actions}
                     </td>
                 </tr>
             `;

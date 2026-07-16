@@ -97,6 +97,9 @@ Then open http://localhost:8753 in your browser.
 The website is the central server. Each workstation runs the same small sync
 script every few minutes. A session is upserted by machine, agent, and session
 ID, so repeated syncs are safe and an active session can keep growing.
+The sync includes privacy-safe aggregates for messages, tokens, calculated
+costs, model usage, tool usage, and daily cost history. Raw prompts, responses,
+working-directory paths, and session transcripts are never uploaded.
 
 ### 1. Configure the website
 

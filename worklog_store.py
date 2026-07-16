@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS synced_sessions (
     started_at TEXT NOT NULL,
     ended_at TEXT NOT NULL,
     activity_spans TEXT NOT NULL,
+    metrics_json TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL,
     PRIMARY KEY (machine_id, agent, session_uid)
 );
@@ -92,6 +93,16 @@ class WorklogStore:
         connection = sqlite3.connect(self.path, timeout=15)
         connection.row_factory = sqlite3.Row
         connection.executescript(SCHEMA)
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(synced_sessions)")
+        }
+        if "metrics_json" not in columns:
+            connection.execute(
+                "ALTER TABLE synced_sessions "
+                "ADD COLUMN metrics_json TEXT NOT NULL DEFAULT '{}'"
+            )
+            connection.commit()
         return connection
 
     def upsert_sessions(self, machine_id: str, sessions: list[dict]) -> int:
@@ -111,6 +122,7 @@ class WorklogStore:
                     spans[0][0],
                     spans[-1][1],
                     json.dumps(spans, separators=(",", ":")),
+                    json.dumps(item.get("metrics", {}), separators=(",", ":")),
                     now,
                 )
             )
@@ -120,19 +132,43 @@ class WorklogStore:
                 """
                 INSERT INTO synced_sessions (
                     machine_id, agent, session_uid, project_key, project_name,
-                    started_at, ended_at, activity_spans, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    started_at, ended_at, activity_spans, metrics_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(machine_id, agent, session_uid) DO UPDATE SET
                     project_key=excluded.project_key,
                     project_name=excluded.project_name,
                     started_at=excluded.started_at,
                     ended_at=excluded.ended_at,
                     activity_spans=excluded.activity_spans,
+                    metrics_json=excluded.metrics_json,
                     updated_at=excluded.updated_at
                 """,
                 rows,
             )
         return len(rows)
+
+    def synced_statistics(self) -> list[dict]:
+        """Return stored session summaries used by the central cost dashboard."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT machine_id, agent, session_uid, project_key, project_name,
+                       started_at, ended_at, activity_spans, metrics_json
+                FROM synced_sessions
+                WHERE metrics_json != '{}'
+                ORDER BY project_name, started_at
+                """
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["activity_spans"] = json.loads(item["activity_spans"])
+                item["metrics"] = json.loads(item.pop("metrics_json"))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            result.append(item)
+        return result
 
     def sync_status(self) -> list[dict]:
         """Return one freshness row per connected workstation."""

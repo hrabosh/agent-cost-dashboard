@@ -3,6 +3,7 @@ import unittest
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+import cost_dashboard
 from worklog_store import WorklogStore, build_activity_spans, merge_spans
 
 
@@ -48,7 +49,74 @@ class WorklogStoreTests(unittest.TestCase):
             "project_name": "Dashboard",
             "cwd": "/work/dashboard",
             "activity_spans": [[start, end]],
+            "metrics": {
+                "messages": 1,
+                "tokens": 42,
+                "cost": 0.125,
+                "models": {},
+                "tools": {},
+                "daily": {},
+            },
         }
+
+    def test_stores_synced_statistics(self):
+        self.store.upsert_sessions(
+            "desktop",
+            [self.session("one", "2026-07-15T10:00:00Z", "2026-07-15T11:00:00Z")],
+        )
+        rows = self.store.synced_statistics()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["machine_id"], "desktop")
+        self.assertEqual(rows[0]["metrics"]["tokens"], 42)
+
+    def test_synced_statistics_populate_dashboard_aggregates(self):
+        session = self.session(
+            "one", "2026-07-15T10:00:00Z", "2026-07-15T11:00:00Z"
+        )
+        session["metrics"] = {
+            "messages": 2,
+            "tokens": 42,
+            "input_tokens": 20,
+            "output_tokens": 12,
+            "cache_read_tokens": 10,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "cost": 0.125,
+            "llm_time": 1.5,
+            "tool_time": 0.5,
+            "avg_tps": 8.0,
+            "models": {
+                "gpt-test": {
+                    "messages": 2,
+                    "tokens": 42,
+                    "input_tokens": 20,
+                    "output_tokens": 12,
+                    "cache_read_tokens": 10,
+                    "cache_write_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "cost": 0.125,
+                    "llm_time": 1.5,
+                }
+            },
+            "tools": {"exec": {"calls": 1, "time": 0.5, "errors": 0}},
+            "daily": {
+                "2026-07-15": {
+                    "messages": 2,
+                    "cost": 0.125,
+                    "models": {"gpt-test": 0.125},
+                }
+            },
+        }
+        self.store.upsert_sessions("desktop", [session])
+        previous = cost_dashboard.WORKLOG_STORE
+        cost_dashboard.WORKLOG_STORE = self.store
+        try:
+            projects = cost_dashboard._collect_synced_projects()
+        finally:
+            cost_dashboard.WORKLOG_STORE = previous
+        self.assertEqual(projects[0]["total_tokens"], 42)
+        self.assertEqual(projects[0]["models"]["gpt-test"]["cost"], 0.125)
+        self.assertEqual(projects[0]["tools"]["exec"]["calls"], 1)
 
     def test_report_does_not_double_count_overlapping_machines(self):
         self.store.upsert_sessions(

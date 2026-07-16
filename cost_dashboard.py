@@ -3,6 +3,7 @@
 
 import json
 import hmac
+import math
 import os
 import re
 import subprocess
@@ -1853,6 +1854,79 @@ def _accumulate_global_stats(
             ) + mcost
 
 
+def _collect_synced_projects() -> list[ProjectStats]:
+    """Build normal dashboard project records from centrally synced summaries."""
+    projects: dict[tuple[str, str], ProjectStats] = {}
+    for row in WORKLOG_STORE.synced_statistics():
+        metrics = row.get("metrics") or {}
+        if not metrics:
+            continue
+        key = (row["project_key"], row["agent"])
+        project = projects.setdefault(
+            key, create_project_stats(row["project_name"], row["agent"])
+        )
+        start = parse_iso(row["started_at"])
+        end = parse_iso(row["ended_at"])
+        session_uid = f'{row["machine_id"]}:{row["session_uid"]}'
+        project["sessions"].append(
+            Session(
+                file=row["session_uid"],
+                path="",
+                uid=session_uid,
+                relative_path=row["session_uid"],
+                cwd=row["project_name"],
+                agent_cmd=row["agent"],
+                messages=metrics["messages"],
+                tokens=metrics["tokens"],
+                input_tokens=metrics["input_tokens"],
+                output_tokens=metrics["output_tokens"],
+                cache_read_tokens=metrics["cache_read_tokens"],
+                cache_write_tokens=metrics["cache_write_tokens"],
+                reasoning_tokens=metrics["reasoning_tokens"],
+                cost=metrics["cost"],
+                start=start,
+                end=end,
+                duration=max(0.0, (end - start).total_seconds()),
+                llm_time=metrics["llm_time"],
+                tool_time=metrics["tool_time"],
+                tools=metrics["tools"],
+                avg_tps=metrics["avg_tps"],
+                subagent_sessions=[],
+            )
+        )
+
+        project["total_messages"] += metrics["messages"]
+        project["total_tokens"] += metrics["tokens"]
+        project["total_input_tokens"] += metrics["input_tokens"]
+        project["total_output_tokens"] += metrics["output_tokens"]
+        project["total_cache_read_tokens"] += metrics["cache_read_tokens"]
+        project["total_cache_write_tokens"] += metrics["cache_write_tokens"]
+        project["total_reasoning_tokens"] += metrics["reasoning_tokens"]
+        project["total_cost"] += metrics["cost"]
+        project["total_llm_time"] += metrics["llm_time"]
+        project["total_tool_time"] += metrics["tool_time"]
+        if metrics["llm_time"] > 0 and metrics["output_tokens"] > 0:
+            project["tps_samples"].append(
+                (metrics["output_tokens"], metrics["llm_time"], "synced")
+            )
+        for model, source in metrics["models"].items():
+            target = project["models"][model]
+            for field in MODEL_STAT_FIELDS:
+                target[field] += source[field]
+        merge_tool_stats(project["tools"], metrics["tools"])
+        for day, source in metrics["daily"].items():
+            target = project["daily_stats"][day]
+            target["messages"] += source["messages"]
+            target["cost"] += source["cost"]
+            for model, cost in source["models"].items():
+                target["models"][model] = target["models"].get(model, 0.0) + cost
+        if project["first_activity"] is None or start < project["first_activity"]:
+            project["first_activity"] = start
+        if project["last_activity"] is None or end > project["last_activity"]:
+            project["last_activity"] = end
+    return list(projects.values())
+
+
 def collect_all_stats() -> tuple[list[ProjectStats], GlobalStats]:
     """Collect statistics from all projects."""
     # Clear the session registry to avoid stale entries on reload
@@ -1912,6 +1986,10 @@ def collect_all_stats() -> tuple[list[ProjectStats], GlobalStats]:
             if project_stats:
                 all_projects.append(project_stats)
                 _accumulate_global_stats(global_stats, project_stats)
+
+    for project_stats in _collect_synced_projects():
+        all_projects.append(project_stats)
+        _accumulate_global_stats(global_stats, project_stats)
 
     return all_projects, global_stats
 
@@ -1999,6 +2077,7 @@ def generate_html():
                     "tool_time": tool_secs,
                     "tool_time_display": format_duration(tool_secs),
                     "avg_tps": session_tps,
+                    "is_synced": not bool(s["path"]),
                     "subagent_sessions": sub_sessions_json,
                 }
             )
@@ -2426,8 +2505,120 @@ def validate_sync_payload(payload: object) -> tuple[str, list[dict]]:
             spans.append([utc_iso(start), utc_iso(end)])
         spans.sort(key=lambda span: span[0])
         clean["activity_spans"] = spans
+        clean["metrics"] = validate_session_metrics(
+            item.get("metrics", {}), f"sessions[{index}].metrics"
+        )
         normalized.append(clean)
     return machine_id.strip(), normalized
+
+
+def _metric_number(
+    value: object, path: str, *, integer: bool = False, maximum: float = 1e18
+) -> int | float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{path} must be a non-negative number")
+    if not math.isfinite(value) or value < 0 or value > maximum:
+        raise ValueError(f"{path} must be a non-negative number")
+    if integer and not isinstance(value, int):
+        raise ValueError(f"{path} must be an integer")
+    return int(value) if integer else float(value)
+
+
+def validate_session_metrics(value: object, path: str) -> dict:
+    """Validate a privacy-safe session statistics summary."""
+    if value == {}:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must be an object")
+
+    clean: dict = {}
+    integer_fields = (
+        "messages",
+        "tokens",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
+    )
+    float_fields = ("cost", "llm_time", "tool_time", "avg_tps")
+    for field in integer_fields:
+        clean[field] = _metric_number(
+            value.get(field, 0), f"{path}.{field}", integer=True
+        )
+    for field in float_fields:
+        clean[field] = _metric_number(value.get(field, 0), f"{path}.{field}")
+
+    raw_models = value.get("models", {})
+    if not isinstance(raw_models, dict) or len(raw_models) > 200:
+        raise ValueError(f"{path}.models must be an object with at most 200 entries")
+    clean["models"] = {}
+    for name, stats in raw_models.items():
+        if not isinstance(name, str) or not name or len(name) > 512:
+            raise ValueError(f"{path}.models has an invalid model name")
+        if not isinstance(stats, dict):
+            raise ValueError(f"{path}.models[{name!r}] must be an object")
+        clean["models"][name] = {
+            field: _metric_number(
+                stats.get(field, 0),
+                f"{path}.models[{name!r}].{field}",
+                integer=field in integer_fields,
+            )
+            for field in MODEL_STAT_FIELDS
+        }
+
+    raw_tools = value.get("tools", {})
+    if not isinstance(raw_tools, dict) or len(raw_tools) > 500:
+        raise ValueError(f"{path}.tools must be an object with at most 500 entries")
+    clean["tools"] = {}
+    for name, stats in raw_tools.items():
+        if not isinstance(name, str) or not name or len(name) > 512:
+            raise ValueError(f"{path}.tools has an invalid tool name")
+        if not isinstance(stats, dict):
+            raise ValueError(f"{path}.tools[{name!r}] must be an object")
+        clean["tools"][name] = {
+            "calls": _metric_number(
+                stats.get("calls", 0), f"{path}.tools[{name!r}].calls", integer=True
+            ),
+            "time": _metric_number(
+                stats.get("time", 0), f"{path}.tools[{name!r}].time"
+            ),
+            "errors": _metric_number(
+                stats.get("errors", 0), f"{path}.tools[{name!r}].errors", integer=True
+            ),
+        }
+
+    raw_daily = value.get("daily", {})
+    if not isinstance(raw_daily, dict) or len(raw_daily) > 5000:
+        raise ValueError(f"{path}.daily must be an object with at most 5000 entries")
+    clean["daily"] = {}
+    for day, stats in raw_daily.items():
+        if not isinstance(day, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise ValueError(f"{path}.daily has an invalid date")
+        if not isinstance(stats, dict):
+            raise ValueError(f"{path}.daily[{day!r}] must be an object")
+        raw_breakdown = stats.get("models", {})
+        if not isinstance(raw_breakdown, dict) or len(raw_breakdown) > 200:
+            raise ValueError(f"{path}.daily[{day!r}].models is invalid")
+        model_breakdown = {}
+        for model, cost in raw_breakdown.items():
+            if not isinstance(model, str) or not model or len(model) > 512:
+                raise ValueError(f"{path}.daily[{day!r}].models has an invalid name")
+            model_breakdown[model] = _metric_number(
+                cost, f"{path}.daily[{day!r}].models[{model!r}]"
+            )
+        clean["daily"][day] = {
+            "messages": _metric_number(
+                stats.get("messages", 0),
+                f"{path}.daily[{day!r}].messages",
+                integer=True,
+            ),
+            "cost": _metric_number(
+                stats.get("cost", 0), f"{path}.daily[{day!r}].cost"
+            ),
+            "models": model_breakdown,
+        }
+    return clean
 
 
 class DashboardHandler(http.server.BaseHTTPRequestHandler):
