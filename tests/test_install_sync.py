@@ -29,6 +29,14 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("'/work/install_sync.py' run", script)
         self.assertIn("exit $LASTEXITCODE", script)
 
+    def test_vbs_launcher_is_windowless_and_waits_for_exit_code(self):
+        script = install_sync.hidden_vbs_launcher(
+            'powershell.exe -File "C:\\AgentCostDashboard\\sync.ps1"'
+        )
+        self.assertIn('powershell.exe -File ""C:\\AgentCostDashboard\\sync.ps1""', script)
+        self.assertIn(', 0, True)', script)
+        self.assertIn('WScript.Quit', script)
+
     def test_windows_schedule_allows_running_on_battery(self):
         with patch.object(install_sync.subprocess, "run") as run:
             install_sync.allow_windows_task_on_battery()

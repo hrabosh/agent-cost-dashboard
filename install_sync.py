@@ -144,6 +144,14 @@ def wsl_launcher_script(distro: str, script_path: Path) -> str:
     )
 
 
+def hidden_vbs_launcher(command: str) -> str:
+    escaped = command.replace('"', '""')
+    return (
+        'Set shell = CreateObject("WScript.Shell")\n'
+        f'WScript.Quit shell.Run("{escaped}", 0, True)\n'
+    )
+
+
 def allow_windows_task_on_battery() -> None:
     command = (
         f"$task = Get-ScheduledTask -TaskName '{TASK_NAME}'; "
@@ -168,10 +176,15 @@ def install_wsl_schedule() -> str:
         wsl_launcher_script(distro, Path(__file__).resolve()), encoding="utf-8"
     )
     launcher_windows = windows_dir / "sync.ps1"
-    task_action = (
+    powershell_command = (
         "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass "
-        f'-WindowStyle Hidden -File "{launcher_windows}"'
+        f'-File "{launcher_windows}"'
     )
+    vbs_linux = linux_dir / "sync.vbs"
+    vbs_linux.write_text(
+        hidden_vbs_launcher(powershell_command), encoding="utf-8"
+    )
+    task_action = f'wscript.exe "{windows_dir / "sync.vbs"}"'
     subprocess.run(
         [
             "schtasks.exe",
