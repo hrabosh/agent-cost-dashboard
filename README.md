@@ -139,7 +139,7 @@ the bearer token; the production dashboard URL and machine hostname are the
 defaults. It stores the token outside the repository, runs a full historical
 sync, and installs a silent five-minute schedule:
 
-- WSL: a Windows Task Scheduler action that launches the sync directly in WSL
+- WSL: a hidden Windows Task Scheduler launcher, so no terminal window appears
 - Native Windows: a hidden Task Scheduler launcher
 - Linux/macOS: the user's crontab
 

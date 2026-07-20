@@ -11,7 +11,7 @@ import shlex
 import socket
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 
 DEFAULT_URL = "https://work.hrabovskyjan.cz/api/v1/sessions"
@@ -110,10 +110,37 @@ def run_sync(historical: bool = False) -> int:
     return result.returncode
 
 
-def wsl_task_action(distro: str, script_path: Path) -> str:
+def windows_local_appdata() -> tuple[Path, PureWindowsPath]:
+    result = subprocess.run(
+        ["cmd.exe", "/C", "echo", "%LOCALAPPDATA%"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    windows_path = (
+        PureWindowsPath(result.stdout.strip().replace("\r", ""))
+        / "AgentCostDashboard"
+    )
+    converted = subprocess.run(
+        ["wslpath", "-u", str(windows_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return Path(converted.stdout.strip()), windows_path
+
+
+def powershell_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def wsl_launcher_script(distro: str, script_path: Path) -> str:
     return (
-        f'wsl.exe -d "{distro}" --exec "{sys.executable}" '
-        f'"{script_path}" run'
+        '& "$env:SystemRoot\\System32\\wsl.exe" '
+        f"-d {powershell_single_quote(distro)} --exec "
+        f"{powershell_single_quote(sys.executable)} "
+        f"{powershell_single_quote(str(script_path))} run\n"
+        "exit $LASTEXITCODE\n"
     )
 
 
@@ -134,7 +161,17 @@ def install_wsl_schedule() -> str:
     distro = os.environ.get("WSL_DISTRO_NAME")
     if not distro:
         raise RuntimeError("WSL_DISTRO_NAME is unavailable; cannot identify this distro")
-    task_action = wsl_task_action(distro, Path(__file__).resolve())
+    linux_dir, windows_dir = windows_local_appdata()
+    linux_dir.mkdir(parents=True, exist_ok=True)
+    launcher_linux = linux_dir / "sync.ps1"
+    launcher_linux.write_text(
+        wsl_launcher_script(distro, Path(__file__).resolve()), encoding="utf-8"
+    )
+    launcher_windows = windows_dir / "sync.ps1"
+    task_action = (
+        "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+        f'-WindowStyle Hidden -File "{launcher_windows}"'
+    )
     subprocess.run(
         [
             "schtasks.exe",
@@ -152,7 +189,7 @@ def install_wsl_schedule() -> str:
         check=True,
     )
     allow_windows_task_on_battery()
-    return f"Windows Task Scheduler task {TASK_NAME} (WSL launcher)"
+    return f"Windows Task Scheduler task {TASK_NAME} (hidden WSL launcher)"
 
 
 def install_windows_schedule() -> str:
