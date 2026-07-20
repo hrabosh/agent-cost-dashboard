@@ -371,6 +371,11 @@ function toggleProjectRow(rowId) {
 function renderSessions() {
     const tbody = document.getElementById('sessions-tbody');
 
+    function branchDisplay(session) {
+        const branches = session.branches || [];
+        return branches.length ? branches.join(' → ') : '—';
+    }
+
     // Flatten sessions with subagent info
     const allSessionsWithSubs = [];
     projects.forEach(p => {
@@ -416,6 +421,8 @@ function renderSessions() {
                 return s.cwd.toLowerCase();
             case 'machine':
                 return (s.machine || 'local').toLowerCase();
+            case 'branch':
+                return all.flatMap(session => session.branches || []).join(' → ').toLowerCase();
             default:
                 return s[field] || 0;
         }
@@ -457,6 +464,7 @@ function renderSessions() {
                 <tr>
                     <td class="project-name" title="${escapeHtml(s.cwd)}">${escapeHtml(shortProject)}</td>
                     <td>${escapeHtml(s.machine || 'local')}</td>
+                    <td title="${escapeHtml(branchDisplay(s))}">${escapeHtml(branchDisplay(s))}</td>
                     <td style="color: var(--text-secondary)">${s.start_display}</td>
                     <td style="color: var(--text-secondary)">${s.duration_display}</td>
                     <td style="color: var(--accent-green)">${s.execution_time_display || '0s'}</td>
@@ -488,6 +496,7 @@ function renderSessions() {
         const aggExecutionTime = allSessionsInGroup.reduce((sum, session) => sum + (session.execution_time || 0), 0);
         const aggLlmTime = allSessionsInGroup.reduce((sum, session) => sum + (session.llm_time || 0), 0);
         const aggToolTime = allSessionsInGroup.reduce((sum, session) => sum + (session.tool_time || 0), 0);
+        const aggBranches = [...new Set(allSessionsInGroup.flatMap(session => session.branches || []))];
 
         // Get earliest start and latest end
         const starts = allSessionsInGroup.map(session => session.start).filter(Boolean);
@@ -518,6 +527,7 @@ function renderSessions() {
                     ${escapeHtml(shortProject)}
                 </td>
                 <td>${escapeHtml(s.machine || 'local')}</td>
+                <td title="${escapeHtml(aggBranches.join(' → ') || '—')}">${escapeHtml(aggBranches.join(' → ') || '—')}</td>
                 <td style="color: var(--text-secondary)">${dateDisplay}</td>
                 <td style="color: var(--text-secondary)">${formatDuration(totalDuration)}</td>
                 <td style="color: var(--accent-green)">${formatDuration(aggExecutionTime)}</td>
@@ -534,9 +544,10 @@ function renderSessions() {
                 </td>
             </tr>
             <tr class="model-breakdown" id="${projectId}">
-                <td colspan="13" style="padding: 0">
+                <td colspan="14" style="padding: 0">
                     <div class="model-tree">
                         <div class="detail-line"><strong>Path:</strong> ${escapeHtml(s.cwd)}</div>
+                        <div class="detail-line"><strong>Branches:</strong> ${escapeHtml(aggBranches.join(' → ') || 'unknown')}</div>
                         <div class="detail-line"><strong>Tokens:</strong> ${formatFullNumber(aggTokenCounts.tokens)} ${tokenDetailText(aggTokenCounts) ? `(${escapeHtml(tokenDetailText(aggTokenCounts))})` : ''}</div>
         `;
 

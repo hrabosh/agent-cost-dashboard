@@ -65,6 +65,29 @@ class PromptMetricsTests(unittest.TestCase):
         seconds = sum((end - start).total_seconds() for start, end in stats["execution_spans"])
         self.assertAlmostEqual(seconds, 334.509, places=3)
 
+    def test_codex_collects_ordered_session_branches(self):
+        path = self.write_jsonl(
+            [
+                {
+                    "timestamp": "2026-07-17T10:00:00Z",
+                    "type": "turn_context",
+                    "payload": {"git": {"branch": "main"}},
+                },
+                {
+                    "timestamp": "2026-07-17T10:01:00Z",
+                    "type": "turn_context",
+                    "payload": {"git": {"branch": "feature/dashboard"}},
+                },
+                {
+                    "timestamp": "2026-07-17T10:02:00Z",
+                    "type": "turn_context",
+                    "payload": {"git": {"branch": "feature/dashboard"}},
+                },
+            ]
+        )
+        stats = cost_dashboard.analyze_codex_jsonl_file(path)
+        self.assertEqual(stats["branches"], ["main", "feature/dashboard"])
+
     def test_claude_excludes_tool_results_from_prompt_count(self):
         path = self.write_jsonl(
             [
@@ -104,6 +127,20 @@ class PromptMetricsTests(unittest.TestCase):
             sum((end - start).total_seconds() for start, end in stats["execution_spans"]),
             10,
         )
+
+    def test_claude_collects_git_branch(self):
+        path = self.write_jsonl(
+            [
+                {
+                    "timestamp": "2026-07-16T10:00:00Z",
+                    "type": "user",
+                    "gitBranch": "feature/dashboard",
+                    "message": {"content": "show branch"},
+                }
+            ]
+        )
+        stats = cost_dashboard.analyze_claude_jsonl_file(path)
+        self.assertEqual(stats["branches"], ["feature/dashboard"])
 
     def test_sync_metrics_contain_counts_but_no_prompt_content(self):
         stats = cost_dashboard.create_session_stats()

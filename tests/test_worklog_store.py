@@ -60,6 +60,7 @@ class WorklogStoreTests(unittest.TestCase):
             "session_uid": uid,
             "project_key": "dashboard",
             "project_name": "Dashboard",
+            "branches": ["feature/dashboard"],
             "cwd": "/work/dashboard",
             "activity_spans": [[start, end]],
             "metrics": {
@@ -80,6 +81,7 @@ class WorklogStoreTests(unittest.TestCase):
         rows = self.store.synced_statistics()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["machine_id"], "desktop")
+        self.assertEqual(rows[0]["branches"], ["feature/dashboard"])
         self.assertEqual(rows[0]["metrics"]["tokens"], 42)
 
     def test_report_includes_daily_prompt_counts(self):
@@ -158,6 +160,9 @@ class WorklogStoreTests(unittest.TestCase):
         self.assertEqual(projects[0]["total_tokens"], 42)
         self.assertEqual(projects[0]["models"]["gpt-test"]["cost"], 0.125)
         self.assertEqual(projects[0]["tools"]["exec"]["calls"], 1)
+        self.assertEqual(
+            projects[0]["sessions"][0]["branches"], ["feature/dashboard"]
+        )
 
     def test_report_does_not_double_count_overlapping_machines(self):
         self.store.upsert_sessions(

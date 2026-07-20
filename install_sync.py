@@ -11,7 +11,7 @@ import shlex
 import socket
 import subprocess
 import sys
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 
 
 DEFAULT_URL = "https://work.hrabovskyjan.cz/api/v1/sessions"
@@ -110,32 +110,23 @@ def run_sync(historical: bool = False) -> int:
     return result.returncode
 
 
-def windows_local_appdata() -> tuple[Path, PureWindowsPath]:
-    result = subprocess.run(
-        ["cmd.exe", "/C", "echo", "%LOCALAPPDATA%"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    windows_path = PureWindowsPath(result.stdout.strip().replace("\r", "")) / "AgentCostDashboard"
-    converted = subprocess.run(
-        ["wslpath", "-u", str(windows_path)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return Path(converted.stdout.strip()), windows_path
-
-
-def wsl_vbs(distro: str, script_path: Path) -> str:
-    command = (
+def wsl_task_action(distro: str, script_path: Path) -> str:
+    return (
         f'wsl.exe -d "{distro}" --exec "{sys.executable}" '
         f'"{script_path}" run'
     )
-    escaped = command.replace('"', '""')
-    return (
-        'Set shell = CreateObject("WScript.Shell")\n'
-        f'shell.Run "{escaped}", 0, False\n'
+
+
+def allow_windows_task_on_battery() -> None:
+    command = (
+        f"$task = Get-ScheduledTask -TaskName '{TASK_NAME}'; "
+        "$task.Settings.DisallowStartIfOnBatteries = $false; "
+        "$task.Settings.StopIfGoingOnBatteries = $false; "
+        "Set-ScheduledTask -InputObject $task | Out-Null"
+    )
+    subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+        check=True,
     )
 
 
@@ -143,12 +134,7 @@ def install_wsl_schedule() -> str:
     distro = os.environ.get("WSL_DISTRO_NAME")
     if not distro:
         raise RuntimeError("WSL_DISTRO_NAME is unavailable; cannot identify this distro")
-    linux_dir, windows_dir = windows_local_appdata()
-    linux_dir.mkdir(parents=True, exist_ok=True)
-    vbs_linux = linux_dir / "sync.vbs"
-    vbs_linux.write_text(wsl_vbs(distro, Path(__file__).resolve()), encoding="utf-8")
-    vbs_windows = windows_dir / "sync.vbs"
-    task_action = f'wscript.exe "{vbs_windows}"'
+    task_action = wsl_task_action(distro, Path(__file__).resolve())
     subprocess.run(
         [
             "schtasks.exe",
@@ -165,7 +151,8 @@ def install_wsl_schedule() -> str:
         ],
         check=True,
     )
-    return f"Windows Task Scheduler task {TASK_NAME} (hidden WSL launcher)"
+    allow_windows_task_on_battery()
+    return f"Windows Task Scheduler task {TASK_NAME} (WSL launcher)"
 
 
 def install_windows_schedule() -> str:
@@ -197,6 +184,7 @@ def install_windows_schedule() -> str:
         ],
         check=True,
     )
+    allow_windows_task_on_battery()
     return f"Windows Task Scheduler task {TASK_NAME} (hidden launcher)"
 
 

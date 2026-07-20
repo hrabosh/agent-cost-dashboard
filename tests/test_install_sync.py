@@ -19,12 +19,23 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("local=Client", command)
         self.assertIn("--all", command)
 
-    def test_wsl_launcher_is_hidden_and_targets_distro(self):
+    def test_wsl_task_action_targets_distro(self):
         with patch.object(install_sync.sys, "executable", "/usr/bin/python3"):
-            content = install_sync.wsl_vbs("Debian", Path("/work/install_sync.py"))
-        self.assertIn("wsl.exe -d \"\"Debian\"\"", content)
-        self.assertIn("/work/install_sync.py", content)
-        self.assertIn(", 0, False", content)
+            action = install_sync.wsl_task_action(
+                "Debian", Path("/work/install_sync.py")
+            )
+        self.assertIn('wsl.exe -d "Debian"', action)
+        self.assertIn('"/usr/bin/python3"', action)
+        self.assertIn('"/work/install_sync.py" run', action)
+
+    def test_windows_schedule_allows_running_on_battery(self):
+        with patch.object(install_sync.subprocess, "run") as run:
+            install_sync.allow_windows_task_on_battery()
+        command = run.call_args.args[0]
+        self.assertIn("powershell.exe", command)
+        self.assertIn("DisallowStartIfOnBatteries = $false", command[-1])
+        self.assertIn("StopIfGoingOnBatteries = $false", command[-1])
+        self.assertTrue(run.call_args.kwargs["check"])
 
     def test_cron_entry_has_stable_marker(self):
         with patch.object(install_sync.sys, "executable", "/usr/bin/python3"):

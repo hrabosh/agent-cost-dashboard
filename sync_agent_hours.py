@@ -143,6 +143,7 @@ def collect_sessions(
                 "session_uid": uid,
                 "project_key": canonical,
                 "project_name": canonical,
+                "branches": list(stats.get("branches", [])),
                 "activity_spans": spans,
                 "execution_spans": [
                     [

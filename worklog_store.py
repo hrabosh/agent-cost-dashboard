@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS synced_sessions (
     ended_at TEXT NOT NULL,
     activity_spans TEXT NOT NULL,
     execution_spans TEXT NOT NULL DEFAULT '[]',
+    branches_json TEXT NOT NULL DEFAULT '[]',
     metrics_json TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL,
     PRIMARY KEY (machine_id, agent, session_uid)
@@ -110,6 +111,12 @@ class WorklogStore:
                 "ADD COLUMN execution_spans TEXT NOT NULL DEFAULT '[]'"
             )
             connection.commit()
+        if "branches_json" not in columns:
+            connection.execute(
+                "ALTER TABLE synced_sessions "
+                "ADD COLUMN branches_json TEXT NOT NULL DEFAULT '[]'"
+            )
+            connection.commit()
         return connection
 
     def upsert_sessions(self, machine_id: str, sessions: list[dict]) -> int:
@@ -130,6 +137,7 @@ class WorklogStore:
                     spans[-1][1],
                     json.dumps(spans, separators=(",", ":")),
                     json.dumps(item.get("execution_spans", []), separators=(",", ":")),
+                    json.dumps(item.get("branches", []), separators=(",", ":")),
                     json.dumps(item.get("metrics", {}), separators=(",", ":")),
                     now,
                 )
@@ -141,8 +149,8 @@ class WorklogStore:
                 INSERT INTO synced_sessions (
                     machine_id, agent, session_uid, project_key, project_name,
                     started_at, ended_at, activity_spans, execution_spans,
-                    metrics_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    branches_json, metrics_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(machine_id, agent, session_uid) DO UPDATE SET
                     project_key=excluded.project_key,
                     project_name=excluded.project_name,
@@ -150,6 +158,7 @@ class WorklogStore:
                     ended_at=excluded.ended_at,
                     activity_spans=excluded.activity_spans,
                     execution_spans=excluded.execution_spans,
+                    branches_json=excluded.branches_json,
                     metrics_json=excluded.metrics_json,
                     updated_at=excluded.updated_at
                 """,
@@ -164,7 +173,7 @@ class WorklogStore:
                 """
                 SELECT machine_id, agent, session_uid, project_key, project_name,
                        started_at, ended_at, activity_spans, metrics_json
-                       , execution_spans
+                       , execution_spans, branches_json
                 FROM synced_sessions
                 WHERE metrics_json != '{}'
                 ORDER BY project_name, started_at
@@ -176,6 +185,7 @@ class WorklogStore:
             try:
                 item["activity_spans"] = json.loads(item["activity_spans"])
                 item["execution_spans"] = json.loads(item["execution_spans"])
+                item["branches"] = json.loads(item.pop("branches_json"))
                 item["metrics"] = json.loads(item.pop("metrics_json"))
             except (TypeError, json.JSONDecodeError):
                 continue

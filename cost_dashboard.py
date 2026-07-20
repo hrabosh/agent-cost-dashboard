@@ -77,6 +77,7 @@ class SessionStats(TypedDict):
     tps_samples: list[tuple[int, float, str]]
     cost_events: list[tuple[datetime, str, float]]
     cwd: str
+    branches: list[str]
 
 
 class ProjectStats(TypedDict):
@@ -134,6 +135,7 @@ class Session(TypedDict):
     cwd: str
     agent_cmd: str
     machine: str
+    branches: list[str]
     messages: int
     prompts: int
     execution_time: float
@@ -837,6 +839,7 @@ def create_session_stats() -> SessionStats:
         "tps_samples": [],
         "cost_events": [],
         "cwd": "",
+        "branches": [],
     }
 
 
@@ -848,6 +851,15 @@ def _record_timestamp(stats: SessionStats, ts: datetime | None) -> None:
         stats["start"] = ts
     if stats["end"] is None or ts > stats["end"]:
         stats["end"] = ts
+
+
+def _record_branch(stats: SessionStats, value: object) -> None:
+    """Keep branch names in first-seen order without retaining other Git data."""
+    if not isinstance(value, str):
+        return
+    branch = value.strip()
+    if branch and len(branch) <= 512 and branch not in stats["branches"]:
+        stats["branches"].append(branch)
 
 
 def record_prompt(stats: SessionStats, ts: datetime | None) -> None:
@@ -958,6 +970,7 @@ def build_session_record(
         cwd=stats["cwd"],
         agent_cmd=agent_cmd,
         machine=machine,
+        branches=list(stats["branches"]),
         messages=stats["messages"],
         prompts=stats["prompts"],
         execution_time=execution_time,
@@ -1106,6 +1119,10 @@ def analyze_jsonl_file(filepath: Path) -> SessionStats:
                     session_data = json.loads(first_line)
                     if session_data.get("type") == "session":
                         cwd = session_data.get("cwd", "")
+                        _record_branch(
+                            stats,
+                            session_data.get("gitBranch", session_data.get("branch")),
+                        )
                 except (json.JSONDecodeError, TypeError):
                     pass
 
@@ -1113,6 +1130,9 @@ def analyze_jsonl_file(filepath: Path) -> SessionStats:
             for line in f:
                 try:
                     data = json.loads(line.strip())
+                    _record_branch(
+                        stats, data.get("gitBranch", data.get("branch"))
+                    )
                     if data.get("type") != "message" or "message" not in data:
                         continue
 
@@ -1251,6 +1271,8 @@ def analyze_claude_jsonl_file(filepath: Path) -> SessionStats:
                     continue
 
                 record_type = data.get("type")
+
+                _record_branch(stats, data.get("gitBranch"))
 
                 # Skip progress records (subagent data - avoid double-counting)
                 # Skip file-history-snapshot and summary records
@@ -1491,6 +1513,9 @@ def analyze_codex_jsonl_file(filepath: Path) -> SessionStats:
                 payload = data.get("payload", {})
                 if not isinstance(payload, dict):
                     payload = {}
+                git_info = payload.get("git")
+                if isinstance(git_info, dict):
+                    _record_branch(stats, git_info.get("branch"))
                 ts = parse_timestamp(data.get("timestamp"))
                 _record_timestamp(stats, ts)
 
@@ -2088,6 +2113,7 @@ def _collect_synced_projects() -> list[ProjectStats]:
                 cwd=row["project_name"],
                 agent_cmd=row["agent"],
                 machine=row["machine_id"],
+                branches=list(row.get("branches") or []),
                 messages=metrics["messages"],
                 prompts=metrics.get("prompts", 0),
                 execution_time=metrics.get("execution_time", 0),
@@ -2245,6 +2271,7 @@ def generate_html():
                         "relative_path": sub["relative_path"],
                         "cwd": sub["cwd"],
                         "machine": sub["machine"],
+                        "branches": list(sub.get("branches", [])),
                         "messages": sub["messages"],
                         "prompts": sub["prompts"],
                         "execution_time": sub["execution_time"],
@@ -2281,6 +2308,7 @@ def generate_html():
                     "relative_path": s.get("relative_path", s["file"]),
                     "cwd": s["cwd"],
                     "machine": s["machine"],
+                    "branches": list(s.get("branches", [])),
                     "messages": s["messages"],
                     "prompts": s["prompts"],
                     "execution_time": s["execution_time"],
@@ -2735,6 +2763,7 @@ def generate_html():
                     <tr>
                         <th data-sort="project">Project / Session <span class="sort-icon">▼</span></th>
                         <th data-sort="machine">Device <span class="sort-icon">▼</span></th>
+                        <th data-sort="branch">Branch <span class="sort-icon">▼</span></th>
                         <th data-sort="start">Date <span class="sort-icon">▼</span></th>
                         <th data-sort="duration">Duration <span class="sort-icon">▼</span></th>
                         <th data-sort="execution_time">Execution <span class="sort-icon">▼</span></th>
@@ -2801,6 +2830,23 @@ def validate_sync_payload(payload: object) -> tuple[str, list[dict]]:
         if not isinstance(project_name, str):
             raise ValueError(f"sessions[{index}] has invalid text fields")
         clean["project_name"] = project_name[:512]
+        raw_branches = item.get("branches", [])
+        if not isinstance(raw_branches, list) or len(raw_branches) > 50:
+            raise ValueError(f"sessions[{index}].branches is invalid")
+        branches = []
+        for branch_index, branch in enumerate(raw_branches):
+            if (
+                not isinstance(branch, str)
+                or not branch.strip()
+                or len(branch) > 512
+            ):
+                raise ValueError(
+                    f"sessions[{index}].branches[{branch_index}] is invalid"
+                )
+            normalized_branch = branch.strip()
+            if normalized_branch not in branches:
+                branches.append(normalized_branch)
+        clean["branches"] = branches
 
         raw_spans = item.get("activity_spans")
         if not isinstance(raw_spans, list) or len(raw_spans) > 10000:
