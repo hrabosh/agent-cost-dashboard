@@ -316,6 +316,12 @@ def build_jira_insights(
                     }
                 )
                 continue
+            # A Jira-looking branch name is not proof that the authenticated
+            # user may browse that issue. The snapshot contains only issues
+            # Jira returned through the user's permissions, so omit local keys
+            # that are absent instead of rendering an unusable issue link.
+            if key not in issue_map:
+                continue
             row = activity.setdefault(
                 (key, day),
                 {
@@ -344,7 +350,7 @@ def build_jira_insights(
 
     rows = []
     for row in activity.values():
-        issue = issue_map.get(row["key"], {})
+        issue = issue_map[row["key"]]
         dashboard_seconds = row["dashboard_seconds"]
         jira_seconds = row["jira_seconds"]
         delta = dashboard_seconds - jira_seconds

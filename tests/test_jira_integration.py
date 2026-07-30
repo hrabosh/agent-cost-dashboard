@@ -172,6 +172,45 @@ class JiraReconciliationTests(unittest.TestCase):
         )
         self.assertEqual(result["activity"][0]["state"], "missing")
 
+    def test_hides_local_ticket_keys_not_visible_to_jira_user(self):
+        timezone = "Europe/Prague"
+        today = datetime.now(ZoneInfo(timezone)).date().isoformat()
+        projects = [
+            {
+                "name": "client",
+                "sessions_list": [
+                    session(["feature/VISIBLE-1"], 900, today),
+                    session(["legacy/BB0A-66"], 780, today),
+                    session(["legacy/A7D2-6"], 600, today),
+                ],
+            }
+        ]
+        snapshot = {
+            "site_url": "https://example.atlassian.net",
+            "jql": jira_integration.DEFAULT_JQL,
+            "account_id": "me",
+            "active_keys": ["VISIBLE-1"],
+            "issues": [
+                {
+                    "key": "VISIBLE-1",
+                    "summary": "Visible issue",
+                    "status": "Open",
+                }
+            ],
+            "worklogs": {"VISIBLE-1": []},
+        }
+
+        result = jira_integration.build_jira_insights(
+            projects, snapshot, timezone, lookback_days=30
+        )
+
+        self.assertEqual(
+            [row["key"] for row in result["activity"]], ["VISIBLE-1"]
+        )
+        serialized = json.dumps(result)
+        self.assertNotIn("BB0A-66", serialized)
+        self.assertNotIn("A7D2-6", serialized)
+
 
 if __name__ == "__main__":
     unittest.main()
