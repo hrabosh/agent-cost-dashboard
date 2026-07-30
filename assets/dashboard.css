@@ -181,6 +181,193 @@ h2 {
     color: var(--text-primary);
 }
 
+.jira-content {
+    min-height: 80px;
+}
+
+.jira-setup,
+.jira-error {
+    padding: 18px 16px;
+    color: var(--text-secondary);
+}
+
+.jira-setup strong,
+.jira-error strong {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--text-primary);
+}
+
+.jira-error {
+    color: var(--accent-red);
+    background: rgba(248, 81, 73, 0.06);
+}
+
+.jira-summary {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(130px, 1fr));
+    gap: 1px;
+    background: var(--border-color);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.jira-metric {
+    padding: 14px 16px;
+    background: var(--bg-secondary);
+}
+
+.jira-metric span {
+    display: block;
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+}
+
+.jira-metric strong {
+    display: block;
+    margin-top: 3px;
+    font-size: 22px;
+}
+
+.jira-metric.alert strong { color: var(--accent-red); }
+.jira-metric.warning strong { color: var(--accent-yellow); }
+.jira-metric.good strong { color: var(--accent-green); }
+
+.jira-toolbar {
+    display: flex;
+    align-items: end;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.jira-toolbar label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.jira-toolbar input,
+.jira-toolbar select {
+    min-height: 32px;
+    padding: 5px 8px;
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+}
+
+.jira-toolbar .jira-context {
+    margin-left: auto;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.jira-key {
+    color: var(--accent-blue);
+    font-family: var(--font-mono);
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.jira-key:hover {
+    text-decoration: underline;
+}
+
+.jira-summary-text {
+    display: block;
+    max-width: 360px;
+    color: var(--text-primary);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.reconcile-state {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.reconcile-state.missing {
+    color: var(--accent-red);
+    background: rgba(248, 81, 73, 0.12);
+}
+
+.reconcile-state.under {
+    color: var(--accent-yellow);
+    background: rgba(210, 153, 34, 0.12);
+}
+
+.reconcile-state.covered {
+    color: var(--accent-green);
+    background: rgba(63, 185, 80, 0.12);
+}
+
+.jira-secondary-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--border-color);
+    border-top: 1px solid var(--border-color);
+}
+
+.jira-secondary {
+    min-width: 0;
+    padding: 16px;
+    background: var(--bg-secondary);
+}
+
+.jira-secondary h3 {
+    margin-bottom: 4px;
+    font-size: 14px;
+}
+
+.jira-secondary > p {
+    margin-bottom: 10px;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.jira-secondary-list {
+    max-height: 260px;
+    overflow-y: auto;
+}
+
+.jira-secondary-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 12px;
+}
+
+.jira-secondary-item:last-child {
+    border-bottom: 0;
+}
+
+.jira-secondary-item small {
+    color: var(--text-secondary);
+}
+
+.jira-empty {
+    padding: 22px 16px;
+    color: var(--text-secondary);
+    text-align: center;
+    font-size: 12px;
+}
+
 .unpriced {
     color: var(--accent-yellow);
     font-weight: 600;
@@ -791,6 +978,19 @@ footer {
 
     .search-control {
         grid-column: 1 / -1;
+    }
+
+    .jira-summary {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .jira-secondary-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .jira-toolbar .jira-context {
+        width: 100%;
+        margin-left: 0;
     }
 }
 

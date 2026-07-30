@@ -23,6 +23,7 @@ import sys
 from typing import TypedDict, DefaultDict
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from jira_integration import get_jira_dashboard
 from worklog_store import WorklogStore, parse_iso, utc_iso
 
 
@@ -2512,6 +2513,7 @@ def generate_html():
         if day["date"] >= today.replace(day=1).isoformat()
     )
     billing = load_billing_config()
+    jira_dashboard = get_jira_dashboard(projects_json, REPORT_TIMEZONE)
 
     dashboard_css = load_asset("dashboard.css")
     dashboard_js = load_asset("dashboard.js")
@@ -2526,6 +2528,7 @@ def generate_html():
             "unpricedModels": sorted(unpriced_models),
             "worklogs": worklogs,
             "billing": billing,
+            "jira": jira_dashboard,
             "syncMachines": sync_status,
             "worklogDefaults": {
                 "from": today.replace(day=1).isoformat(),
@@ -2652,6 +2655,14 @@ def generate_html():
             </div>
             <p class="timing-caveat"><strong>Why totals differ:</strong> these are different views of the same activity, not values to add together. Availability also varies by agent and session format.</p>
         </details>
+
+        <section class="section jira-section" id="jira-section">
+            <div class="section-header">
+                <span>Jira reconciliation</span>
+                <span class="badge" id="jira-status-badge">Read-only</span>
+            </div>
+            <div id="jira-content" class="jira-content"></div>
+        </section>
 
         <div class="section worklog-section">
             <div class="section-header">

@@ -67,6 +67,19 @@ time unions overlapping active spans, agent time includes activity gaps up to
 response waits when available, and tool time measures tool-call duration.
 These measures can overlap and are not intended to be added together.
 
+### Jira Reconciliation
+
+An optional read-only Jira Cloud connection compares agent execution with the
+authenticated user's Jira worklogs:
+
+- Finds Jira keys such as `ABC-123` in Git branches and session metadata
+- Shows ticket-days with no Jira worklog or a difference greater than 15 minutes
+- Lists recent agent activity without a Jira key
+- Lists unresolved assigned tickets without recent agent activity
+- Links directly to each visible Jira issue
+- Keeps the Jira email and API token on the server; credentials are never
+  included in browser data
+
 ### Central Work Reports
 
 - Sync compact activity summaries from any number of workstations
@@ -244,6 +257,43 @@ both tax included. `AGENT_DASHBOARD_SUBSCRIPTIONS` overrides those defaults.
 
 Only prompt counts and timestamps are synchronized. Prompt text, responses,
 source code, tool payloads, and attachments remain on the workstation.
+
+### Jira Cloud configuration
+
+Create a scoped Jira API token with the classic `read:jira-work` and
+`read:jira-user` scopes. Configure it only in the dashboard server environment:
+
+```bash
+export AGENT_DASHBOARD_JIRA_URL="https://your-site.atlassian.net"
+export AGENT_DASHBOARD_JIRA_EMAIL="your-atlassian-login@example.com"
+export AGENT_DASHBOARD_JIRA_TOKEN="replace-with-your-scoped-token"
+```
+
+The dashboard discovers the site's Cloud ID from `/_edge/tenant_info` and uses
+Atlassian's required `https://api.atlassian.com/ex/jira/{cloudId}` gateway. If
+automatic discovery is unavailable, set it explicitly:
+
+```bash
+export AGENT_DASHBOARD_JIRA_CLOUD_ID="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+```
+
+By default, Jira reconciliation uses the last 30 days and this JQL:
+
+```text
+assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC
+```
+
+Optional controls:
+
+```bash
+export AGENT_DASHBOARD_JIRA_JQL='project in (ABC, XYZ) AND assignee = currentUser() ORDER BY updated DESC'
+export AGENT_DASHBOARD_JIRA_LOOKBACK_DAYS="30"
+export AGENT_DASHBOARD_JIRA_CACHE_SECONDS="300"
+export AGENT_DASHBOARD_JIRA_MAX_ISSUES="100"
+```
+
+The integration performs no Jira writes. Jira still applies the account's
+normal project permissions and issue-level security.
 
 ### Project names across computers
 

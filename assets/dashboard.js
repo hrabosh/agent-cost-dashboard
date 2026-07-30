@@ -902,6 +902,156 @@ function renderTools() {
     }).join('');
 }
 
+// ── Jira reconciliation ─────────────────────────────────────────────
+const jiraData = dashboardData.jira || {configured: false, status: 'disabled'};
+
+function jiraIssueLink(key, issue = {}) {
+    const fallback = jiraData.site_url
+        ? `${jiraData.site_url}/browse/${encodeURIComponent(key)}`
+        : '#';
+    return `<a class="jira-key" href="${escapeHtml(issue.url || fallback)}" target="_blank" rel="noopener">${escapeHtml(key)}</a>`;
+}
+
+function jiraStateLabel(state) {
+    const labels = {
+        missing: 'Missing worklog',
+        under: 'Time gap',
+        covered: 'Covered',
+    };
+    return `<span class="reconcile-state ${state}">${labels[state] || state}</span>`;
+}
+
+function renderJiraActivity() {
+    const tbody = document.getElementById('jira-activity-tbody');
+    if (!tbody) return;
+    const state = document.getElementById('jira-state-filter').value;
+    const query = document.getElementById('jira-search').value.trim().toLowerCase();
+    const rows = (jiraData.activity || []).filter(row => {
+        if (state && row.state !== state) return false;
+        const issue = row.issue || {};
+        return !query || [
+            row.key,
+            issue.summary,
+            issue.status,
+            ...(row.projects || []),
+            ...(row.branches || []),
+        ].join(' ').toLowerCase().includes(query);
+    });
+    tbody.innerHTML = rows.map(row => {
+        const issue = row.issue || {};
+        const delta = Number(row.delta_seconds || 0);
+        return `
+            <tr>
+                <td>${row.date}</td>
+                <td>
+                    ${jiraIssueLink(row.key, issue)}
+                    <span class="jira-summary-text" title="${escapeHtml(issue.summary || 'Issue details are not visible')}">${escapeHtml(issue.summary || 'Issue details are not visible')}</span>
+                </td>
+                <td>${escapeHtml(issue.status || 'Unknown')}</td>
+                <td title="${escapeHtml((row.projects || []).join(', '))}">${escapeHtml((row.projects || []).map(displayNameFromPath).join(', '))}</td>
+                <td style="color:var(--accent-green)">${jiraDuration(row.dashboard_seconds)}</td>
+                <td style="color:var(--accent-purple)">${jiraDuration(row.jira_seconds)}</td>
+                <td style="color:${delta > 900 ? 'var(--accent-yellow)' : 'var(--text-secondary)'}">${delta > 0 ? '+' : (delta < 0 ? '−' : '')}${jiraDuration(Math.abs(delta))}</td>
+                <td>${jiraStateLabel(row.state)}</td>
+            </tr>
+        `;
+    }).join('') || '<tr class="empty-table-row"><td colspan="8">No ticket activity matches this view.</td></tr>';
+    document.getElementById('jira-visible-count').textContent =
+        `${rows.length} of ${(jiraData.activity || []).length} ticket-days`;
+}
+
+function setupJira() {
+    const content = document.getElementById('jira-content');
+    const badge = document.getElementById('jira-status-badge');
+    if (!jiraData.configured) {
+        badge.textContent = jiraData.status === 'incomplete' ? 'Setup incomplete' : 'Not configured';
+        content.innerHTML = jiraData.status === 'incomplete'
+            ? `<div class="jira-error"><strong>Jira setup is incomplete</strong>${escapeHtml(jiraData.message || '')}</div>`
+            : `<div class="jira-setup"><strong>Connect Jira to find missing ticket worklogs</strong>Set AGENT_DASHBOARD_JIRA_URL, AGENT_DASHBOARD_JIRA_EMAIL, and AGENT_DASHBOARD_JIRA_TOKEN on the server. Credentials never reach the browser.</div>`;
+        return;
+    }
+    if (jiraData.status !== 'ok') {
+        badge.textContent = 'Connection error';
+        content.innerHTML = `<div class="jira-error"><strong>Jira could not be refreshed</strong>${escapeHtml(jiraData.message || 'Unknown Jira error')}</div>`;
+        return;
+    }
+
+    badge.textContent = `Connected · ${jiraData.account_name || 'Jira user'}`;
+    const unlinked = (jiraData.unlinked || []).map(row => `
+        <div class="jira-secondary-item">
+            <div>
+                <strong>${escapeHtml(displayNameFromPath(row.project))}</strong>
+                <small>${row.date}${row.branches?.length ? ` · ${escapeHtml(row.branches.join(', '))}` : ''}</small>
+            </div>
+            <span>${jiraDuration(row.seconds)}</span>
+        </div>
+    `).join('') || '<div class="jira-empty">Every recent session has a Jira key.</div>';
+    const noActivity = (jiraData.no_activity || []).map(issue => `
+        <div class="jira-secondary-item">
+            <div>
+                ${jiraIssueLink(issue.key, issue)}
+                <span class="jira-summary-text" title="${escapeHtml(issue.summary)}">${escapeHtml(issue.summary)}</span>
+            </div>
+            <small>${escapeHtml(issue.status)}</small>
+        </div>
+    `).join('') || '<div class="jira-empty">All active assigned tickets have recent agent activity.</div>';
+
+    content.innerHTML = `
+        <div class="jira-summary">
+            <div class="jira-metric"><span>Active tickets</span><strong>${jiraData.active_issue_count}</strong></div>
+            <div class="jira-metric alert"><span>Missing worklogs</span><strong>${jiraData.missing_count}</strong></div>
+            <div class="jira-metric warning"><span>Time gaps</span><strong>${jiraData.underlogged_count}</strong></div>
+            <div class="jira-metric good"><span>Covered</span><strong>${jiraData.covered_count}</strong></div>
+            <div class="jira-metric warning"><span>Unlinked sessions</span><strong>${jiraData.unlinked_count}</strong></div>
+        </div>
+        <div class="jira-toolbar">
+            <label>Status
+                <select id="jira-state-filter">
+                    <option value="">All reconciliation states</option>
+                    <option value="missing">Missing worklog</option>
+                    <option value="under">Time gap</option>
+                    <option value="covered">Covered</option>
+                </select>
+            </label>
+            <label>Search
+                <input id="jira-search" type="search" placeholder="Ticket, summary, project…">
+            </label>
+            <span id="jira-visible-count"></span>
+            <span class="jira-context">Last ${jiraData.lookback_days} days · execution vs your Jira worklogs · read-only</span>
+        </div>
+        <table class="jira-activity-table">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Ticket</th>
+                    <th>Jira status</th>
+                    <th>Dashboard project</th>
+                    <th>Execution</th>
+                    <th>Jira logged</th>
+                    <th>Difference</th>
+                    <th>Result</th>
+                </tr>
+            </thead>
+            <tbody id="jira-activity-tbody"></tbody>
+        </table>
+        <div class="jira-secondary-grid">
+            <div class="jira-secondary">
+                <h3>Unlinked agent activity</h3>
+                <p>No Jira key such as ABC-123 was found in the branch or session metadata.</p>
+                <div class="jira-secondary-list">${unlinked}</div>
+            </div>
+            <div class="jira-secondary">
+                <h3>Assigned tickets without recent agent activity</h3>
+                <p>Open tickets returned by your configured JQL but not matched during the lookback period.</p>
+                <div class="jira-secondary-list">${noActivity}</div>
+            </div>
+        </div>
+    `;
+    document.getElementById('jira-state-filter').addEventListener('change', renderJiraActivity);
+    document.getElementById('jira-search').addEventListener('input', renderJiraActivity);
+    renderJiraActivity();
+}
+
 // ── Central worklog / Jira report ───────────────────────────────────
 const worklogs = dashboardData.worklogs || [];
 const billing = dashboardData.billing || {};
@@ -1227,6 +1377,7 @@ setupSorting('tools-table', toolSort, renderTools);
 setupWorklogs();
 renderDevices();
 setupExplorer();
+setupJira();
 
 // Initial render
 renderProjects();
