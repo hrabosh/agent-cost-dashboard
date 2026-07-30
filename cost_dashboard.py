@@ -407,6 +407,33 @@ MANUAL_PRICING = {
     # ── Claude (Anthropic API pricing per 1M tokens) ──────────────────────────
     # Specific version strings avoid mislabelling different-priced variants.
     # pi sessions use hyphens (claude-opus-4-5); direct API / OR use dots (4.5).
+    # https://platform.claude.com/docs/en/about-claude/pricing
+    "claude-opus-5": {
+        "input": 5.0,
+        "output": 25.0,
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+    },
+    "claude-fable-5": {
+        "input": 10.0,
+        "output": 50.0,
+        "cache_read": 1.0,
+        "cache_write": 12.5,
+    },
+    "claude-mythos-5": {
+        "input": 10.0,
+        "output": 50.0,
+        "cache_read": 1.0,
+        "cache_write": 12.5,
+    },
+    # Introductory Sonnet 5 pricing through 2026-08-31. Anthropic documents
+    # standard $3/$15 pricing starting 2026-09-01; refresh this entry then.
+    "claude-sonnet-5": {
+        "input": 2.0,
+        "output": 10.0,
+        "cache_read": 0.2,
+        "cache_write": 2.5,
+    },
     # claude-opus-4.5 / 4.6 — $5/$25
     "claude-opus-4.5": {
         "input": 5.0,
@@ -525,16 +552,23 @@ MANUAL_PRICING = {
         "cache_write": 6.25,
     },
     "gpt-5.6-terra": {
-        "input": 2.5,
-        "output": 15.0,
-        "cache_read": 0.25,
-        "cache_write": 3.125,
+        "input": 2.0,
+        "output": 12.0,
+        "cache_read": 0.2,
+        "cache_write": 2.5,
     },
     "gpt-5.6-luna": {
-        "input": 1.0,
-        "output": 6.0,
-        "cache_read": 0.1,
-        "cache_write": 1.25,
+        "input": 0.2,
+        "output": 1.2,
+        "cache_read": 0.02,
+        "cache_write": 0.25,
+    },
+    # The public gpt-5.6 alias routes to Sol.
+    "gpt-5.6": {
+        "input": 5.0,
+        "output": 30.0,
+        "cache_read": 0.5,
+        "cache_write": 6.25,
     },
     "gpt-5.5": {
         "input": 5.0,

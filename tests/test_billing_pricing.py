@@ -22,6 +22,57 @@ class PricingTests(unittest.TestCase):
         finally:
             cost_dashboard._OPENROUTER_PRICING = previous
 
+    def test_gpt_5_6_alias_and_family_use_official_standard_rates(self):
+        previous = cost_dashboard._OPENROUTER_PRICING
+        cost_dashboard._OPENROUTER_PRICING = {}
+        try:
+            token_counts = {
+                "input_tokens": 1_000_000,
+                "output_tokens": 1_000_000,
+                "cache_read_tokens": 1_000_000,
+                "cache_write_tokens": 1_000_000,
+            }
+            self.assertAlmostEqual(
+                cost_dashboard.get_manual_cost("gpt-5.6", **token_counts),
+                41.75,
+            )
+            self.assertAlmostEqual(
+                cost_dashboard.get_manual_cost("gpt-5.6-terra", **token_counts),
+                16.7,
+            )
+            self.assertAlmostEqual(
+                cost_dashboard.get_manual_cost("gpt-5.6-luna", **token_counts),
+                1.67,
+            )
+        finally:
+            cost_dashboard._OPENROUTER_PRICING = previous
+
+    def test_latest_claude_models_have_provider_pricing(self):
+        previous = cost_dashboard._OPENROUTER_PRICING
+        cost_dashboard._OPENROUTER_PRICING = {}
+        try:
+            token_counts = {
+                "input_tokens": 1_000_000,
+                "output_tokens": 1_000_000,
+                "cache_read_tokens": 1_000_000,
+                "cache_write_tokens": 1_000_000,
+            }
+            expected = {
+                "claude-opus-5": 36.75,
+                "claude-fable-5": 73.5,
+                "claude-mythos-5": 73.5,
+                "claude-sonnet-5": 14.7,
+            }
+            for model, cost in expected.items():
+                with self.subTest(model=model):
+                    self.assertAlmostEqual(
+                        cost_dashboard.get_manual_cost(model, **token_counts),
+                        cost,
+                    )
+                    self.assertTrue(cost_dashboard.model_has_pricing(model))
+        finally:
+            cost_dashboard._OPENROUTER_PRICING = previous
+
 
 class BillingConfigTests(unittest.TestCase):
     def test_deployment_defaults_to_tax_included_subscriptions(self):

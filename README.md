@@ -418,7 +418,8 @@ not actual incremental charges. The calculator prefers explicit provider rates
 in `MANUAL_PRICING`, then falls back to the committed OpenRouter catalog for
 models without a provider rate. Unknown models are shown as **Unpriced** rather
 than incorrectly appearing free. Supported model families include Claude,
-Gemini, GPT-5, O3/O4, and GLM.
+Gemini, GPT-5, O3/O4, and GLM. Explicit current entries include the GPT-5.6
+family and Claude Opus 5, Fable 5, Mythos 5, and Sonnet 5.
 
 ## Credits
 
