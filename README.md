@@ -41,6 +41,9 @@ Track which tools your agent uses most:
 All projects with expandable details:
 - Per-project cost, model usage, tool usage, and session history
 - Sortable by cost, tokens, LLM time, or date
+- Shared advanced filters for project, Git branch, device, date range, text,
+  and minimum API-equivalent value
+- Live filtered totals for cost, tokens, execution, LLM, and tool time
 
 ![Projects](screenshots/projects.png)
 
@@ -51,8 +54,18 @@ Browse every session with full details:
 - Session duration, LLM time, and tool time
 - Subagent session support with expandable grouping
 - Sortable by date, duration, cost, tokens, and more
+- Group sessions by project, branch, device, or day
+- Browser-persisted explorer filters and one-click reset
 
 ![Sessions](screenshots/sessions.png)
+
+### Time Definitions
+
+The dashboard includes an in-product guide for every time measure. Wall-clock
+time unions overlapping active spans, agent time includes activity gaps up to
+10 minutes, execution time measures active turns, LLM time measures model
+response waits when available, and tool time measures tool-call duration.
+These measures can overlap and are not intended to be added together.
 
 ### Central Work Reports
 

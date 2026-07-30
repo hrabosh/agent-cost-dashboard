@@ -2623,6 +2623,36 @@ def generate_html():
         </div>
         {notices_html}
 
+        <details class="timing-guide">
+            <summary>
+                <span class="timing-guide-title">How dashboard time is calculated</span>
+                <span class="timing-guide-hint">Open the timing guide</span>
+            </summary>
+            <div class="timing-guide-grid">
+                <div class="timing-definition wall">
+                    <span class="timing-dot"></span>
+                    <div><strong>Wall-clock time</strong><p>The union of active work spans. Overlapping sessions and devices count once, so this is the closest measure of elapsed human work time.</p></div>
+                </div>
+                <div class="timing-definition agent">
+                    <span class="timing-dot"></span>
+                    <div><strong>Agent time</strong><p>Activity from the first to last event in a session, split when the idle gap is longer than 10 minutes. Parallel sessions can overlap.</p></div>
+                </div>
+                <div class="timing-definition execution">
+                    <span class="timing-dot"></span>
+                    <div><strong>Execution time</strong><p>Measured busy intervals while an agent is actively processing a turn. Idle gaps between prompts are excluded; overlapping execution is combined in work reports.</p></div>
+                </div>
+                <div class="timing-definition llm">
+                    <span class="timing-dot"></span>
+                    <div><strong>LLM time</strong><p>Time spent waiting for model responses when the source agent exposes reliable request timing. It is a component of execution, not extra time.</p></div>
+                </div>
+                <div class="timing-definition tool">
+                    <span class="timing-dot"></span>
+                    <div><strong>Tool time</strong><p>Elapsed time inside tool calls such as shell commands, file operations, and searches. Parallel or nested calls may overlap with other measures.</p></div>
+                </div>
+            </div>
+            <p class="timing-caveat"><strong>Why totals differ:</strong> these are different views of the same activity, not values to add together. Availability also varies by agent and session format.</p>
+        </details>
+
         <div class="section worklog-section">
             <div class="section-header">
                 <span>Invoice &amp; Worklog Report</span>
@@ -2726,10 +2756,66 @@ def generate_html():
             </table>
         </div>
 
+        <section class="explorer" aria-labelledby="explorer-title">
+            <div class="explorer-heading">
+                <div>
+                    <span class="eyebrow">Advanced controls</span>
+                    <h2 id="explorer-title">Data explorer</h2>
+                    <p>Filters apply to both projects and sessions below.</p>
+                </div>
+                <button class="clear-filters" id="clear-explorer-filters" type="button">Reset filters</button>
+            </div>
+            <div class="explorer-controls">
+                <label class="search-control">
+                    <span>Search</span>
+                    <input id="explorer-search" type="search" placeholder="Project, branch, device…" autocomplete="off">
+                </label>
+                <label>
+                    <span>Project</span>
+                    <select id="explorer-project"><option value="">All projects</option></select>
+                </label>
+                <label>
+                    <span>Branch</span>
+                    <select id="explorer-branch"><option value="">All branches</option></select>
+                </label>
+                <label>
+                    <span>Device</span>
+                    <select id="explorer-device"><option value="">All devices</option></select>
+                </label>
+                <label>
+                    <span>From</span>
+                    <input id="explorer-from" type="date">
+                </label>
+                <label>
+                    <span>To</span>
+                    <input id="explorer-to" type="date">
+                </label>
+                <label>
+                    <span>Minimum session value</span>
+                    <input id="explorer-min-cost" type="number" min="0" step="0.01" inputmode="decimal" placeholder="$0.00">
+                </label>
+                <label>
+                    <span>Group sessions by</span>
+                    <select id="explorer-group">
+                        <option value="">No grouping</option>
+                        <option value="project">Project</option>
+                        <option value="branch">Branch</option>
+                        <option value="machine">Device</option>
+                        <option value="day">Day</option>
+                    </select>
+                </label>
+            </div>
+            <div class="explorer-status">
+                <span id="explorer-result-count">All data</span>
+                <span class="active-filter-count" id="active-filter-count">No active filters</span>
+            </div>
+            <div class="explorer-totals" id="explorer-totals"></div>
+        </section>
+
         <div class="section">
             <div class="section-header">
                 <span>Projects</span>
-                <span class="badge">{len(all_projects)} projects</span>
+                <span class="badge" id="projects-count">{len(all_projects)} projects</span>
             </div>
             <table id="projects-table">
                 <thead>

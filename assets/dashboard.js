@@ -197,6 +197,16 @@ function formatDuration(seconds) {
 
 let projectSort = { field: 'last_activity', asc: false };
 let sessionsSort = { field: 'start', asc: false };
+const explorerState = {
+    search: '',
+    project: '',
+    branch: '',
+    machine: '',
+    from: '',
+    to: '',
+    minCost: 0,
+    group: '',
+};
 
 function escapeHtml(text) {
     const div = document.createElement('div');
@@ -300,9 +310,122 @@ function sortData(data, sort) {
     });
 }
 
+function sessionsForProject(project) {
+    return (project.sessions_list || []).map(session => ({
+        ...session,
+        project_name: project.name,
+        agent_cmd: project.agent_cmd,
+    }));
+}
+
+function sessionFamily(session) {
+    return [session, ...(session.subagent_sessions || [])];
+}
+
+function sessionAggregate(session, field) {
+    const family = sessionFamily(session);
+    if (field === 'duration') {
+        const starts = family.map(item => item.start).filter(Boolean).map(value => new Date(value).getTime());
+        const ends = family.map(item => item.end).filter(Boolean).map(value => new Date(value).getTime());
+        return starts.length && ends.length ? (Math.max(...ends) - Math.min(...starts)) / 1000 : 0;
+    }
+    if (field === 'avg_tps') {
+        const values = family.map(item => Number(item.avg_tps || 0)).filter(value => value > 0);
+        return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+    }
+    return family.reduce((sum, item) => sum + Number(item[field] || 0), 0);
+}
+
+function sessionBranches(session) {
+    return [...new Set(sessionFamily(session).flatMap(item => item.branches || []))];
+}
+
+function sessionMatchesExplorer(session) {
+    const branches = sessionBranches(session);
+    const project = String(session.project_name || session.cwd || '');
+    const machines = [...new Set(sessionFamily(session).map(item => item.machine || 'local'))];
+    const searchHaystack = [
+        project,
+        displayNameFromPath(project),
+        ...branches,
+        ...machines,
+        session.file || '',
+        session.uid || '',
+    ].join(' ').toLowerCase();
+    const day = String(session.start || '').slice(0, 10);
+
+    if (explorerState.search && !searchHaystack.includes(explorerState.search)) return false;
+    if (explorerState.project && project !== explorerState.project) return false;
+    if (explorerState.branch && !branches.includes(explorerState.branch)) return false;
+    if (explorerState.machine && !machines.includes(explorerState.machine)) return false;
+    if (explorerState.from && (!day || day < explorerState.from)) return false;
+    if (explorerState.to && (!day || day > explorerState.to)) return false;
+    if (sessionAggregate(session, 'cost') < explorerState.minCost) return false;
+    return true;
+}
+
+function filteredSessions() {
+    return projects.flatMap(sessionsForProject).filter(sessionMatchesExplorer);
+}
+
+function filteredProjectViews() {
+    return projects.map(project => {
+        const matching = sessionsForProject(project).filter(sessionMatchesExplorer);
+        if (!matching.length) return null;
+        const families = matching.flatMap(sessionFamily);
+        const sum = field => families.reduce((total, session) => total + Number(session[field] || 0), 0);
+        const tpsValues = families.map(session => Number(session.avg_tps || 0)).filter(value => value > 0);
+        const lastActivity = matching
+            .flatMap(session => sessionFamily(session).map(item => item.end || item.start).filter(Boolean))
+            .sort()
+            .at(-1) || '';
+        const machines = [...new Set(families.map(session => session.machine || 'local'))].sort();
+        return {
+            ...project,
+            sessions: matching.length,
+            sessions_list: matching,
+            machines,
+            machine_display: machines.join(', '),
+            messages: sum('messages'),
+            prompts: sum('prompts'),
+            execution_time: sum('execution_time'),
+            execution_time_display: formatDuration(sum('execution_time')),
+            tokens: sum('tokens'),
+            input_tokens: sum('input_tokens'),
+            output_tokens: sum('output_tokens'),
+            cache_read_tokens: sum('cache_read_tokens'),
+            cache_write_tokens: sum('cache_write_tokens'),
+            reasoning_tokens: sum('reasoning_tokens'),
+            cost: sum('cost'),
+            llm_time: sum('llm_time'),
+            llm_time_display: formatDuration(sum('llm_time')),
+            tool_time: sum('tool_time'),
+            tool_time_display: formatDuration(sum('tool_time')),
+            avg_tps: tpsValues.length
+                ? tpsValues.reduce((total, value) => total + value, 0) / tpsValues.length
+                : 0,
+            last_activity: lastActivity,
+            last_activity_display: lastActivity
+                ? new Date(lastActivity).toLocaleString([], {dateStyle: 'short', timeStyle: 'short'})
+                : 'N/A',
+        };
+    }).filter(Boolean);
+}
+
+function projectBranches(project) {
+    return [...new Set(sessionsForProject(project).flatMap(sessionBranches))];
+}
+
 function renderProjects() {
     const tbody = document.getElementById('projects-tbody');
-    const sorted = sortData(projects, projectSort);
+    const visibleProjects = filteredProjectViews();
+    const sorted = sortData(visibleProjects, projectSort);
+    document.getElementById('projects-count').textContent =
+        `${visibleProjects.length} of ${projects.length} projects`;
+    if (!sorted.length) {
+        tbody.innerHTML = '<tr class="empty-table-row"><td colspan="12">No projects match these filters.</td></tr>';
+        return;
+    }
     tbody.innerHTML = sorted.map((p, idx) => {
         const displayName = displayNameFromPath(p.name);
         const shortName = displayName.length > 50 ? displayName.slice(0, 47) + '...' : displayName;
@@ -350,10 +473,11 @@ function renderProjects() {
                 <td colspan="12">
                     <div class="model-tree">
                         <div class="detail-line"><strong>Path:</strong> ${escapeHtml(p.name)}</div>
+                        <div class="detail-line"><strong>Branches:</strong> ${escapeHtml(projectBranches(p).join(', ') || 'unknown')}</div>
                         <div class="detail-line" title="${escapeHtml(tokenTitle(p))}"><strong>Tokens:</strong> ${formatCompactNumber(p.tokens)} ${tokenDetailText(p, true) ? `(${escapeHtml(tokenDetailText(p, true))})` : ''}</div>
-                        <div style="font-weight: 600; margin-bottom: 8px; color: var(--text-secondary)">Models:</div>
+                        <div style="font-weight: 600; margin-bottom: 8px; color: var(--text-secondary)">Models (all-time project breakdown):</div>
                         ${modelRows || '<div style="color: var(--text-secondary)">No model data</div>'}
-                        ${toolRows ? `<div style="font-weight: 600; margin: 12px 0 8px 0; color: var(--text-secondary)">Tools:</div>${toolRows}` : ''}
+                        ${toolRows ? `<div style="font-weight: 600; margin: 12px 0 8px 0; color: var(--text-secondary)">Tools (all-time project breakdown):</div>${toolRows}` : ''}
                     </div>
                 </td>
             </tr>
@@ -376,14 +500,8 @@ function renderSessions() {
         return branches.length ? branches.join(' → ') : '—';
     }
 
-    // Flatten sessions with subagent info
-    const allSessionsWithSubs = [];
-    projects.forEach(p => {
-        p.sessions_list.forEach(s => {
-            // Add agent_cmd from parent project for resume command
-            allSessionsWithSubs.push({...s, agent_cmd: p.agent_cmd});
-        });
-    });
+    // Flatten sessions with their parent project, then apply the shared explorer.
+    const allSessionsWithSubs = filteredSessions();
 
     // Helper to get aggregated value for a session (including subagents)
     function getAggregatedValue(s, field) {
@@ -392,44 +510,51 @@ function renderSessions() {
 
         switch(field) {
             case 'cost':
-                return all.reduce((sum, session) => sum + session.cost, 0);
+                return sessionAggregate(s, 'cost');
             case 'tokens':
-                return all.reduce((sum, session) => sum + session.tokens, 0);
+                return sessionAggregate(s, 'tokens');
             case 'messages':
-                return all.reduce((sum, session) => sum + session.messages, 0);
+                return sessionAggregate(s, 'messages');
             case 'prompts':
-                return all.reduce((sum, session) => sum + (session.prompts || 0), 0);
+                return sessionAggregate(s, 'prompts');
             case 'execution_time':
-                return all.reduce((sum, session) => sum + (session.execution_time || 0), 0);
+                return sessionAggregate(s, 'execution_time');
             case 'llm_time':
-                return all.reduce((sum, session) => sum + (session.llm_time || 0), 0);
+                return sessionAggregate(s, 'llm_time');
             case 'tool_time':
-                return all.reduce((sum, session) => sum + (session.tool_time || 0), 0);
+                return sessionAggregate(s, 'tool_time');
             case 'avg_tps':
-                const tpsValues = all.map(session => session.avg_tps || 0).filter(v => v > 0);
-                return tpsValues.length > 0 ? tpsValues.reduce((a, b) => a + b, 0) / tpsValues.length : 0;
+                return sessionAggregate(s, 'avg_tps');
             case 'duration':
-                const starts = all.map(session => session.start).filter(Boolean);
-                const ends = all.map(session => session.end).filter(Boolean);
-                if (!starts.length || !ends.length) return 0;
-                const earliest = Math.min(...starts.map(d => new Date(d)));
-                const latest = Math.max(...ends.map(d => new Date(d)));
-                return (latest - earliest) / 1000;
+                return sessionAggregate(s, 'duration');
             case 'start':
                 return s.start ? new Date(s.start).getTime() : 0;
             case 'project':
-                return s.cwd.toLowerCase();
+                return (s.project_name || s.cwd).toLowerCase();
             case 'machine':
                 return (s.machine || 'local').toLowerCase();
             case 'branch':
-                return all.flatMap(session => session.branches || []).join(' → ').toLowerCase();
+                return sessionBranches(s).join(' → ').toLowerCase();
             default:
                 return s[field] || 0;
         }
     }
 
     // Sort sessions using current sort state
+    const groupValue = session => {
+        switch (explorerState.group) {
+            case 'project': return displayNameFromPath(session.project_name || session.cwd);
+            case 'branch': return sessionBranches(session)[0] || 'No branch';
+            case 'machine': return session.machine || 'local';
+            case 'day': return String(session.start || '').slice(0, 10) || 'Unknown date';
+            default: return '';
+        }
+    };
     const sortedSessions = [...allSessionsWithSubs].sort((a, b) => {
+        if (explorerState.group) {
+            const groupOrder = groupValue(a).localeCompare(groupValue(b));
+            if (groupOrder) return groupOrder;
+        }
         const aVal = getAggregatedValue(a, sessionsSort.field);
         const bVal = getAggregatedValue(b, sessionsSort.field);
 
@@ -439,12 +564,22 @@ function renderSessions() {
     });
 
     const totalSessions = allSessionsWithSubs.reduce((sum, s) => sum + 1 + (s.subagent_sessions || []).length, 0);
-    document.getElementById('sessions-count').textContent = totalSessions + ' sessions';
+    const unfilteredSessionCount = projects.flatMap(sessionsForProject)
+        .reduce((sum, s) => sum + 1 + (s.subagent_sessions || []).length, 0);
+    document.getElementById('sessions-count').textContent =
+        `${totalSessions} of ${unfilteredSessionCount} sessions`;
 
     let html = '';
     let rowIdx = 0;
+    let previousGroup = null;
 
     sortedSessions.forEach(s => {
+        const currentGroup = groupValue(s);
+        if (explorerState.group && currentGroup !== previousGroup) {
+            const groupCount = sortedSessions.filter(item => groupValue(item) === currentGroup).length;
+            html += `<tr class="session-group-row"><td colspan="14">${escapeHtml(currentGroup)} · ${groupCount} session${groupCount === 1 ? '' : 's'}</td></tr>`;
+            previousGroup = currentGroup;
+        }
         const subs = s.subagent_sessions || [];
         const hasSubs = subs.length > 0;
 
@@ -616,7 +751,8 @@ function renderSessions() {
         `;
     });
 
-    tbody.innerHTML = html;
+    tbody.innerHTML = html ||
+        '<tr class="empty-table-row"><td colspan="14">No sessions match these filters.</td></tr>';
 }
 
 function copyResumeCommand(event, cmd) {
@@ -936,6 +1072,153 @@ function renderDevices() {
     }).join('') || '<tr><td colspan="3" style="color: var(--text-secondary)">No devices synchronized yet.</td></tr>';
 }
 
+// ── Shared project/session explorer ─────────────────────────────────
+const EXPLORER_STORAGE_KEY = 'agent-dashboard-explorer-v1';
+
+function populateSelect(id, values) {
+    const select = document.getElementById(id);
+    [...new Set(values.filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b))
+        .forEach(value => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = value;
+            select.appendChild(option);
+        });
+}
+
+function updateExplorerSummary() {
+    const sessions = filteredSessions();
+    const projectCount = new Set(sessions.map(session => session.project_name)).size;
+    const familyCount = sessions.reduce(
+        (sum, session) => sum + 1 + (session.subagent_sessions || []).length, 0
+    );
+    const totals = {
+        cost: sessions.reduce((sum, session) => sum + sessionAggregate(session, 'cost'), 0),
+        execution: sessions.reduce((sum, session) => sum + sessionAggregate(session, 'execution_time'), 0),
+        llm: sessions.reduce((sum, session) => sum + sessionAggregate(session, 'llm_time'), 0),
+        tool: sessions.reduce((sum, session) => sum + sessionAggregate(session, 'tool_time'), 0),
+        tokens: sessions.reduce((sum, session) => sum + sessionAggregate(session, 'tokens'), 0),
+    };
+    const activeFilters = [
+        explorerState.search,
+        explorerState.project,
+        explorerState.branch,
+        explorerState.machine,
+        explorerState.from,
+        explorerState.to,
+        explorerState.minCost > 0 ? explorerState.minCost : '',
+    ].filter(Boolean).length;
+
+    document.getElementById('explorer-result-count').textContent =
+        `${projectCount} project${projectCount === 1 ? '' : 's'} · ${familyCount} session${familyCount === 1 ? '' : 's'}`;
+    document.getElementById('active-filter-count').textContent = activeFilters
+        ? `${activeFilters} active filter${activeFilters === 1 ? '' : 's'}${explorerState.group ? ' · grouped' : ''}`
+        : (explorerState.group ? 'Grouped · no filters' : 'No active filters');
+    document.getElementById('explorer-totals').innerHTML = [
+        ['API-equivalent value', `$${totals.cost.toFixed(2)}`],
+        ['Execution', formatDuration(totals.execution)],
+        ['LLM time', formatDuration(totals.llm)],
+        ['Tool time', formatDuration(totals.tool)],
+        ['Tokens', formatCompactNumber(totals.tokens)],
+    ].map(([label, value]) =>
+        `<span class="explorer-total">${label}<strong>${value}</strong></span>`
+    ).join('');
+}
+
+function applyExplorer() {
+    renderProjects();
+    renderSessions();
+    updateExplorerSummary();
+    try {
+        localStorage.setItem(EXPLORER_STORAGE_KEY, JSON.stringify(explorerState));
+    } catch (_) {
+        // Storage can be unavailable in private or restricted browser contexts.
+    }
+}
+
+function readExplorerControls() {
+    explorerState.search = document.getElementById('explorer-search').value.trim().toLowerCase();
+    explorerState.project = document.getElementById('explorer-project').value;
+    explorerState.branch = document.getElementById('explorer-branch').value;
+    explorerState.machine = document.getElementById('explorer-device').value;
+    explorerState.from = document.getElementById('explorer-from').value;
+    explorerState.to = document.getElementById('explorer-to').value;
+    explorerState.minCost = Math.max(0, Number(document.getElementById('explorer-min-cost').value || 0));
+    explorerState.group = document.getElementById('explorer-group').value;
+}
+
+function writeExplorerControls() {
+    const valueById = {
+        'explorer-search': explorerState.search,
+        'explorer-project': explorerState.project,
+        'explorer-branch': explorerState.branch,
+        'explorer-device': explorerState.machine,
+        'explorer-from': explorerState.from,
+        'explorer-to': explorerState.to,
+        'explorer-min-cost': explorerState.minCost || '',
+        'explorer-group': explorerState.group,
+    };
+    Object.entries(valueById).forEach(([id, value]) => {
+        const element = document.getElementById(id);
+        if (!element) return;
+        if (element.tagName === 'SELECT' &&
+            ![...element.options].some(option => option.value === String(value))) return;
+        element.value = value;
+    });
+}
+
+function setupExplorer() {
+    const allSessions = projects.flatMap(sessionsForProject);
+    populateSelect('explorer-project', projects.map(project => project.name));
+    populateSelect('explorer-branch', allSessions.flatMap(sessionBranches));
+    populateSelect(
+        'explorer-device',
+        allSessions.flatMap(session => sessionFamily(session).map(item => item.machine || 'local'))
+    );
+
+    try {
+        const saved = JSON.parse(localStorage.getItem(EXPLORER_STORAGE_KEY) || '{}');
+        Object.keys(explorerState).forEach(key => {
+            if (saved[key] !== undefined) explorerState[key] = saved[key];
+        });
+    } catch (_) {
+        // Ignore stale or unavailable browser storage.
+    }
+    writeExplorerControls();
+    readExplorerControls();
+
+    let searchTimer;
+    document.getElementById('explorer-search').addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => {
+            readExplorerControls();
+            applyExplorer();
+        }, 120);
+    });
+    [
+        'explorer-project',
+        'explorer-branch',
+        'explorer-device',
+        'explorer-from',
+        'explorer-to',
+        'explorer-min-cost',
+        'explorer-group',
+    ].forEach(id => document.getElementById(id).addEventListener('change', () => {
+        readExplorerControls();
+        applyExplorer();
+    }));
+    document.getElementById('clear-explorer-filters').addEventListener('click', () => {
+        Object.assign(explorerState, {
+            search: '', project: '', branch: '', machine: '',
+            from: '', to: '', minCost: 0, group: '',
+        });
+        writeExplorerControls();
+        applyExplorer();
+        document.getElementById('explorer-search').focus();
+    });
+}
+
 // Setup
 setupSorting('projects-table', projectSort, renderProjects);
 setupSorting('sessions-table', sessionsSort, renderSessions);
@@ -943,12 +1226,14 @@ setupSorting('models-table', modelSort, renderModels);
 setupSorting('tools-table', toolSort, renderTools);
 setupWorklogs();
 renderDevices();
+setupExplorer();
 
 // Initial render
 renderProjects();
 renderSessions();
 renderModels();
 renderTools();
+updateExplorerSummary();
 updateSortIcons('projects-table', projectSort);
 updateSortIcons('sessions-table', sessionsSort);
 updateSortIcons('models-table', modelSort);
