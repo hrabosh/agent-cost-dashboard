@@ -1,6 +1,10 @@
 *.jsonl
 __pycache__/
 *.py[cod]
+.venv/
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
 dashboard.sqlite3
 dashboard.sqlite3-shm
 dashboard.sqlite3-wal

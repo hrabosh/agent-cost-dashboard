@@ -20,6 +20,7 @@ import argparse
 import shlex
 import shutil
 import sys
+from dataclasses import dataclass
 from typing import TypedDict, DefaultDict
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -124,6 +125,20 @@ class GlobalStats(TypedDict):
     tools: DefaultDict[str, ToolStats]
     daily_stats: DefaultDict[str, DailyStats]
     tps_samples: list[tuple[int, float, str]]
+
+
+@dataclass(frozen=True)
+class DashboardSnapshot:
+    """Reusable dashboard data plus the internal values needed by legacy HTML."""
+
+    data: dict
+    global_stats: GlobalStats
+    month_seconds: float
+    month_agent_seconds: float
+    month_execution_seconds: float
+    billing: dict
+    sync_status: list
+    unpriced_models: list[str]
 
 
 class Session(TypedDict):
@@ -2240,8 +2255,8 @@ def collect_all_stats() -> tuple[list[ProjectStats], GlobalStats]:
     return all_projects, global_stats
 
 
-def generate_html():
-    """Generate HTML dashboard."""
+def build_dashboard_snapshot() -> DashboardSnapshot:
+    """Collect and serialize dashboard analytics for HTML and API consumers."""
     all_projects, global_stats = collect_all_stats()
 
     # Sort projects by cost for initial display
@@ -2515,27 +2530,74 @@ def generate_html():
     billing = load_billing_config()
     jira_dashboard = get_jira_dashboard(projects_json, REPORT_TIMEZONE)
 
+    dashboard_data = {
+        "generatedAt": datetime.now(ZoneInfo(REPORT_TIMEZONE)).isoformat(),
+        "summary": {
+            "total_cost": global_stats["total_cost"],
+            "monthly_subscription_cost": billing["monthly_subscription_cost"],
+            "currency": billing["currency"],
+            "projects": global_stats["total_projects"],
+            "sessions": global_stats["total_sessions"],
+            "messages": global_stats["total_messages"],
+            "prompts": global_stats["total_prompts"],
+            "tokens": global_stats["total_tokens"],
+            "input_tokens": global_stats["total_input_tokens"],
+            "output_tokens": global_stats["total_output_tokens"],
+            "cache_read_tokens": global_stats["total_cache_read_tokens"],
+            "cache_write_tokens": global_stats["total_cache_write_tokens"],
+            "reasoning_tokens": global_stats["total_reasoning_tokens"],
+            "execution_time": global_stats["total_execution_time"],
+            "llm_time": global_stats["total_llm_time"],
+            "tool_time": global_stats["total_tool_time"],
+            "avg_tps": calc_avg_tokens_per_sec(global_stats["tps_samples"]),
+            "month_agent_seconds": month_agent_seconds,
+            "month_execution_seconds": month_execution_seconds,
+            "month_wall_seconds": month_seconds,
+            "synced_machines": len(sync_status),
+        },
+        "projects": projects_json,
+        "dailyStats": daily_stats_list,
+        "models": models_json,
+        "tools": tools_json,
+        "totalCost": global_stats["total_cost"],
+        "totalToolTime": global_stats["total_tool_time"],
+        "unpricedModels": sorted(unpriced_models),
+        "worklogs": worklogs,
+        "billing": billing,
+        "jira": jira_dashboard,
+        "syncMachines": sync_status,
+        "worklogDefaults": {
+            "from": today.replace(day=1).isoformat(),
+            "to": today.isoformat(),
+        },
+    }
+    return DashboardSnapshot(
+        data=dashboard_data,
+        global_stats=global_stats,
+        month_seconds=month_seconds,
+        month_agent_seconds=month_agent_seconds,
+        month_execution_seconds=month_execution_seconds,
+        billing=billing,
+        sync_status=sync_status,
+        unpriced_models=unpriced_models,
+    )
+
+
+def generate_html():
+    """Generate the legacy HTML dashboard from the shared analytics snapshot."""
+    snapshot = build_dashboard_snapshot()
+    dashboard_data = snapshot.data
+    global_stats = snapshot.global_stats
+    month_seconds = snapshot.month_seconds
+    month_agent_seconds = snapshot.month_agent_seconds
+    month_execution_seconds = snapshot.month_execution_seconds
+    billing = snapshot.billing
+    sync_status = snapshot.sync_status
+    unpriced_models = snapshot.unpriced_models
+
     dashboard_css = load_asset("dashboard.css")
     dashboard_js = load_asset("dashboard.js")
-    dashboard_data_json = json_for_script(
-        {
-            "projects": projects_json,
-            "dailyStats": daily_stats_list,
-            "models": models_json,
-            "tools": tools_json,
-            "totalCost": global_stats["total_cost"],
-            "totalToolTime": global_stats["total_tool_time"],
-            "unpricedModels": sorted(unpriced_models),
-            "worklogs": worklogs,
-            "billing": billing,
-            "jira": jira_dashboard,
-            "syncMachines": sync_status,
-            "worklogDefaults": {
-                "from": today.replace(day=1).isoformat(),
-                "to": today.isoformat(),
-            },
-        }
-    )
+    dashboard_data_json = json_for_script(dashboard_data)
     token_summary_card = render_token_summary_card(global_stats)
     subscription_value = (
         f'{billing["currency"]} {billing["monthly_subscription_cost"]:.2f}'
@@ -2826,7 +2888,7 @@ def generate_html():
         <div class="section">
             <div class="section-header">
                 <span>Projects</span>
-                <span class="badge" id="projects-count">{len(all_projects)} projects</span>
+                <span class="badge" id="projects-count">{global_stats["total_projects"]} projects</span>
             </div>
             <table id="projects-table">
                 <thead>

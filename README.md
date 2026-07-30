@@ -3,7 +3,9 @@
 Web dashboard for coding-agent usage, API-equivalent token value, subscription
 spend, and invoice-ready project time. It supports [Pi](https://github.com/mariozechner/pi-coding-agent), [Oh My Pi](https://github.com/can1357/oh-my-pi), [Claude Code](https://github.com/anthropics/claude-code), [Codex CLI](https://github.com/openai/codex), and [Gemini CLI](https://github.com/google-gemini/gemini-cli).
 
-No external dependencies — pure Python stdlib.
+The legacy dashboard and collectors use only the Python standard library. An
+optional FastAPI service provides the typed read-only API used by the ongoing
+React dashboard migration.
 
 It can also collect active agent working time from multiple computers into one
 central SQLite database and produce project/date reports ready to copy into Jira.
@@ -118,6 +120,44 @@ cd pi-cost-dashboard
 On Windows, you can also double-click `start.bat`.
 
 Then open http://localhost:8753 in your browser.
+
+## Read-only API v2
+
+The first migration stage keeps the current dashboard on port `8753` and runs a
+typed FastAPI service in parallel. It uses the same collectors, calculations,
+SQLite database, billing settings, and read-only Jira reconciliation.
+
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
+
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-api.txt
+
+AGENT_DASHBOARD_DB=/var/lib/agent-cost-dashboard/worklog.sqlite3 \
+AGENT_DASHBOARD_TIMEZONE=Europe/Prague \
+.venv/bin/uvicorn dashboard_api.app:app \
+  --host 127.0.0.1 \
+  --port 8754
+```
+
+The initial endpoints are:
+
+- `GET /` for the new React dashboard (when `frontend/dist` exists)
+- `GET /api/v2/health`
+- `GET /api/v2/dashboard`
+- `GET /docs` for the generated OpenAPI explorer
+
+`/api/v2/dashboard` is read-only, cached for 30 seconds by default, and omits
+raw local session paths and working directories. Set
+`AGENT_DASHBOARD_API_CACHE_SECONDS` to change the cache interval. Keep this
+service bound to `127.0.0.1` and route it through the same authenticated HTTPS
+reverse proxy as the legacy dashboard.
+
+The React frontend consumes this contract on port `8754`; the existing UI on
+port `8753` remains the production fallback until feature parity is verified.
 
 ## Central multi-machine setup
 
