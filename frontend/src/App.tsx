@@ -362,6 +362,12 @@ function Overview({ data }: { data: DashboardResponse }) {
 
 type ProjectGroup = "none" | "project" | "branch" | "agent" | "machine";
 
+type TimedProjectSummary = ProjectSummary & {
+  wall_time: number | null;
+  agent_time: number | null;
+  accounted_execution_time: number | null;
+};
+
 function projectIdentity(project: ProjectSummary): string {
   return JSON.stringify([project.agent, project.name]);
 }
@@ -375,6 +381,69 @@ function sessionBranches(session: SessionSummary): string[] {
 
 function primaryBranch(session: SessionSummary): string {
   return sessionBranches(session).at(-1) || "No branch";
+}
+
+function normalizedProjectKey(value: string): string {
+  return value.replaceAll("\\", "/").replace(/\/$/, "");
+}
+
+function attachProjectTiming(
+  project: ProjectSummary,
+  worklogs: DashboardResponse["worklogs"],
+  filters: {
+    dateFrom: string;
+    dateTo: string;
+    branch: string;
+    machine: string;
+  },
+): TimedProjectSummary {
+  const identity = normalizedProjectKey(project.name);
+  const matchingDays = worklogs
+    .filter(
+      (worklog) =>
+        normalizedProjectKey(worklog.project_name) === identity ||
+        normalizedProjectKey(worklog.project_key) === identity,
+    )
+    .flatMap((worklog) =>
+      worklog.daily.filter((day) => {
+        const branchMatches =
+          filters.branch === "all" ||
+          (filters.branch === "No branch"
+            ? day.branches.length === 0
+            : day.branches.includes(filters.branch));
+        const machineMatches =
+          filters.machine === "all" ||
+          (filters.machine === "Unknown device"
+            ? day.machine_ids.length === 0
+            : day.machine_ids.includes(filters.machine));
+        return (
+          (!filters.dateFrom || day.date >= filters.dateFrom) &&
+          (!filters.dateTo || day.date <= filters.dateTo) &&
+          branchMatches &&
+          machineMatches
+        );
+      }),
+    );
+  if (!matchingDays.length) {
+    return {
+      ...project,
+      wall_time: null,
+      agent_time: null,
+      accounted_execution_time: null,
+    };
+  }
+  return {
+    ...project,
+    wall_time: matchingDays.reduce((total, day) => total + day.seconds, 0),
+    agent_time: matchingDays.reduce(
+      (total, day) => total + day.agent_seconds,
+      0,
+    ),
+    accounted_execution_time: matchingDays.reduce(
+      (total, day) => total + day.execution_seconds,
+      0,
+    ),
+  };
 }
 
 function summarizeProjectSessions(
@@ -533,6 +602,31 @@ function Projects({ data }: { data: DashboardResponse }) {
         projects: groupProjects.sort((a, b) => b.cost - a.cost),
       }));
   }, [filtered, group]);
+  const timedGroups = useMemo(
+    () =>
+      groups.map((item) => ({
+        ...item,
+        projects: item.projects.map((project) =>
+          attachProjectTiming(project, data.worklogs, {
+            dateFrom,
+            dateTo,
+            branch:
+              branch !== "all"
+                ? branch
+                : group === "branch"
+                  ? item.label
+                  : "all",
+            machine:
+              machine !== "all"
+                ? machine
+                : group === "machine"
+                  ? item.label
+                  : "all",
+          }),
+        ),
+      })),
+    [branch, data.worklogs, dateFrom, dateTo, group, groups, machine],
+  );
   const visibleSessions = filtered.reduce(
     (total, project) => total + project.sessions,
     0,
@@ -617,15 +711,6 @@ function Projects({ data }: { data: DashboardResponse }) {
           </select>
         </label>
         <label>
-          <span>Branch</span>
-          <select value={branch} onChange={(event) => setBranch(event.target.value)}>
-            <option value="all">All branches</option>
-            {branches.map((item) => (
-              <option value={item} key={item}>{item}</option>
-            ))}
-          </select>
-        </label>
-        <label>
           <span>Device</span>
           <select value={machine} onChange={(event) => setMachine(event.target.value)}>
             <option value="all">All devices</option>
@@ -681,8 +766,15 @@ function Projects({ data }: { data: DashboardResponse }) {
         )}
       </div>
 
+      <p className="project-time-note">
+        Wall-clock, agent, and execution use synced project-day worklogs for the
+        selected date, branch, and device scope. LLM and tool time follow the visible
+        sessions. Branch/device matching selects complete project-day records; a dash
+        means no matching synced worklog is available.
+      </p>
+
       <div className="group-stack">
-        {groups.map((item) => (
+        {timedGroups.map((item) => (
           <section className="panel project-group" key={item.id}>
             {group !== "none" && (
               <div className="group-heading">
@@ -701,16 +793,11 @@ function Projects({ data }: { data: DashboardResponse }) {
                     <th>Agent / devices</th>
                     <th>Last activity</th>
                     <th className="numeric">Sessions</th>
-                    <th
-                      className="numeric"
-                      title={
-                        hasSessionFilters
-                          ? "Completed prompt processing in the visible sessions"
-                          : "Completed prompt processing across all collected sessions"
-                      }
-                    >
-                      Execution ({hasSessionFilters ? "filtered" : "all data"})
-                    </th>
+                    <th className="numeric" title="Elapsed active project time with overlap removed">Wall-clock</th>
+                    <th className="numeric" title="Active session time; parallel agents add up">Agent</th>
+                    <th className="numeric" title="Completed prompt processing">Execution</th>
+                    <th className="numeric" title="Time waiting for model responses">LLM</th>
+                    <th className="numeric" title="Elapsed time inside tool calls">Tools</th>
                     <th className="numeric">Tokens</th>
                     <th className="numeric">Value</th>
                     <th />
@@ -737,7 +824,7 @@ function Projects({ data }: { data: DashboardResponse }) {
   );
 }
 
-function ProjectRow({ project }: { project: ProjectSummary }) {
+function ProjectRow({ project }: { project: TimedProjectSummary }) {
   const [open, setOpen] = useState(false);
   const latestSessions = [...project.session_items]
     .sort((a, b) => (b.start ?? "").localeCompare(a.start ?? ""))
@@ -761,7 +848,13 @@ function ProjectRow({ project }: { project: ProjectSummary }) {
         </td>
         <td>{shortDate(project.last_activity)}</td>
         <td className="numeric">{project.sessions}</td>
-        <td className="numeric">{duration(project.execution_time)}</td>
+        <td className="numeric">{project.wall_time === null ? "—" : duration(project.wall_time)}</td>
+        <td className="numeric">{project.agent_time === null ? "—" : duration(project.agent_time)}</td>
+        <td className="numeric">
+          {duration(project.accounted_execution_time ?? project.execution_time)}
+        </td>
+        <td className="numeric">{duration(project.llm_time)}</td>
+        <td className="numeric">{duration(project.tool_time)}</td>
         <td className="numeric">{compact(project.tokens)}</td>
         <td className="numeric strong-number">{money(project.cost)}</td>
         <td>
@@ -772,7 +865,7 @@ function ProjectRow({ project }: { project: ProjectSummary }) {
       </tr>
       {open && (
         <tr className="detail-row">
-          <td colSpan={8}>
+          <td colSpan={12}>
             <div className="session-detail">
               <div className="detail-summary">
                 <span>
