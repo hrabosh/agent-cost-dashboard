@@ -1,7 +1,7 @@
 import json
 import os
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -171,6 +171,65 @@ class JiraReconciliationTests(unittest.TestCase):
             projects, snapshot, timezone, lookback_days=30
         )
         self.assertEqual(result["activity"][0]["state"], "missing")
+
+    def test_includes_authenticated_users_jira_only_worklog_days(self):
+        timezone = "Europe/Prague"
+        today = datetime.now(ZoneInfo(timezone)).date()
+        jira_only_day = (today - timedelta(days=1)).isoformat()
+        local_day = today.isoformat()
+        projects = [
+            {
+                "name": "core",
+                "sessions_list": [
+                    session(["PORTAL-9103"], 1800, local_day, project="core")
+                ],
+            }
+        ]
+        issue = {
+            "key": "PORTAL-9103",
+            "summary": "Portal task",
+            "status": "In Progress",
+            "updated": local_day,
+            "url": "https://example.atlassian.net/browse/PORTAL-9103",
+        }
+        snapshot = {
+            "site_url": "https://example.atlassian.net",
+            "jql": jira_integration.DEFAULT_JQL,
+            "account_id": "me",
+            "account_name": "Developer",
+            "active_keys": ["PORTAL-9103"],
+            "issues": [issue],
+            "worklogs": {
+                "PORTAL-9103": [
+                    {
+                        "author": {"accountId": "me"},
+                        "started": local_day,
+                        "timeSpentSeconds": 1800,
+                    },
+                    {
+                        "author": {"accountId": "me"},
+                        "started": jira_only_day,
+                        "timeSpentSeconds": 7 * 3600,
+                    },
+                ]
+            },
+        }
+
+        result = jira_integration.build_jira_insights(
+            projects, snapshot, timezone, lookback_days=30
+        )
+
+        rows = {row["date"]: row for row in result["activity"]}
+        self.assertEqual(set(rows), {local_day, jira_only_day})
+        self.assertEqual(rows[jira_only_day]["dashboard_seconds"], 0)
+        self.assertEqual(rows[jira_only_day]["jira_seconds"], 7 * 3600)
+        self.assertEqual(rows[jira_only_day]["delta_seconds"], -(7 * 3600))
+        self.assertEqual(rows[jira_only_day]["projects"], [])
+        self.assertEqual(rows[jira_only_day]["branches"], [])
+        self.assertEqual(
+            sum(row["jira_seconds"] for row in result["activity"]),
+            7 * 3600 + 1800,
+        )
 
     def test_hides_local_ticket_keys_not_visible_to_jira_user(self):
         timezone = "Europe/Prague"

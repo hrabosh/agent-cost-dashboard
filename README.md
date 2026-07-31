@@ -335,6 +335,48 @@ export AGENT_DASHBOARD_JIRA_MAX_ISSUES="100"
 The integration performs no Jira writes. Jira still applies the account's
 normal project permissions and issue-level security.
 
+#### Inspect raw Jira worklogs
+
+Run this on the dashboard server, where the Jira environment variables are
+configured. It calls the same read-only Jira Cloud endpoint as the dashboard:
+
+```bash
+JIRA_ISSUE="PORTAL-9103"
+JIRA_CLOUD_ID="${AGENT_DASHBOARD_JIRA_CLOUD_ID:-$(curl --silent --show-error --fail-with-body \
+  "${AGENT_DASHBOARD_JIRA_URL%/}/_edge/tenant_info" | jq --raw-output '.cloudId')}"
+
+curl --silent --show-error --fail-with-body \
+  --user "${AGENT_DASHBOARD_JIRA_EMAIL}:${AGENT_DASHBOARD_JIRA_TOKEN}" \
+  --header "Accept: application/json" \
+  "https://api.atlassian.com/ex/jira/${JIRA_CLOUD_ID}/rest/api/3/issue/${JIRA_ISSUE}/worklog?startAt=0&maxResults=1000" \
+  | jq .
+```
+
+For a compact view without comments and other worklog content, replace the
+final `jq .` with:
+
+```bash
+jq '{
+  startAt,
+  maxResults,
+  total,
+  worklogs: [.worklogs[] | {
+    id,
+    started,
+    timeSpent,
+    timeSpentSeconds,
+    author: {
+      accountId: .author.accountId,
+      displayName: .author.displayName
+    }
+  }]
+}'
+```
+
+The response is paginated. If `total` is greater than the number of returned
+`worklogs`, repeat the request with the next `startAt` value. Avoid posting the
+raw response publicly because it can include people and worklog comments.
+
 ### Project names across computers
 
 Folder basenames are the default shared project names. If the same project uses

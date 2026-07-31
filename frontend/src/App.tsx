@@ -847,7 +847,7 @@ function JiraRow({ row }: { row: JiraDisplayRow }) {
           <strong>{row.issue.summary}</strong>
           <span className="muted-line">{row.issue.status}</span>
         </td>
-        <td>{row.projects.map(displayProject).join(", ")}</td>
+        <td>{row.projects.map(displayProject).join(", ") || "No agent project"}</td>
         <td className="numeric">{duration(row.dashboard_seconds)}</td>
         <td className="numeric">{duration(row.jira_seconds)}</td>
         <td className="numeric strong-number">
@@ -886,7 +886,10 @@ function JiraRow({ row }: { row: JiraDisplayRow }) {
                 <div className="jira-day-line" key={`${record.key}-${record.date}`}>
                   <span>{record.date}</span>
                   <span>
-                    <strong>{record.projects.map(displayProject).join(", ")}</strong>
+                    <strong>
+                      {record.projects.map(displayProject).join(", ") ||
+                        "No agent project"}
+                    </strong>
                     <small>{record.branches.join(", ") || "No branch recorded"}</small>
                   </span>
                   <span>{duration(record.dashboard_seconds)}</span>
@@ -976,7 +979,7 @@ function Jira({ data }: { data: DashboardResponse }) {
           : group === "date"
             ? [row.date]
             : [row.state];
-      (keys.length ? keys : ["No project"]).forEach((key) =>
+      (keys.length ? keys : ["No agent project"]).forEach((key) =>
         result.set(key, [...(result.get(key) ?? []), row]),
       );
     });

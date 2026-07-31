@@ -337,16 +337,32 @@ def build_jira_insights(
             row["projects"].add(project_name)
             row["branches"].update(branches)
 
+    local_activity_keys = {key for key, _ in activity}
     account_id = str(snapshot.get("account_id", ""))
     for key, worklogs in snapshot.get("worklogs", {}).items():
+        normalized_key = str(key).upper()
+        if normalized_key not in issue_map:
+            continue
         for worklog in worklogs:
             author = worklog.get("author") if isinstance(worklog.get("author"), dict) else {}
             if account_id and str(author.get("accountId", "")) != account_id:
                 continue
             day = _local_day(worklog.get("started"), timezone)
-            row = activity.get((str(key).upper(), day))
-            if row:
-                row["jira_seconds"] += round(float(worklog.get("timeSpentSeconds") or 0))
+            seconds = round(float(worklog.get("timeSpentSeconds") or 0))
+            if not day or day < cutoff or seconds <= 0:
+                continue
+            row = activity.setdefault(
+                (normalized_key, day),
+                {
+                    "key": normalized_key,
+                    "date": day,
+                    "dashboard_seconds": 0,
+                    "jira_seconds": 0,
+                    "projects": set(),
+                    "branches": set(),
+                },
+            )
+            row["jira_seconds"] += seconds
 
     rows = []
     for row in activity.values():
@@ -371,11 +387,10 @@ def build_jira_insights(
         )
     rows.sort(key=lambda item: (item["date"], item["key"]), reverse=True)
 
-    recent_keys = {key for key, _ in activity}
     no_activity = [
         issue_map[key]
         for key in active_keys
-        if key in issue_map and key not in recent_keys
+        if key in issue_map and key not in local_activity_keys
     ]
     no_activity.sort(key=lambda issue: issue.get("updated", ""), reverse=True)
     unlinked.sort(key=lambda item: (item["date"], item["project"]), reverse=True)
