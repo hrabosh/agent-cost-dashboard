@@ -135,6 +135,7 @@ class WorklogDay(ApiModel):
     execution_hours: float
     prompts: int
     machine_ids: list[str]
+    branches: list[str]
 
 
 class WorklogProject(ApiModel):
@@ -149,6 +150,7 @@ class WorklogProject(ApiModel):
     prompts: int
     machines: int
     machine_ids: list[str]
+    branches: list[str]
     sessions: int
     daily: list[WorklogDay]
 
@@ -241,4 +243,3 @@ class DashboardResponse(ApiModel):
     sync_machines: list[SyncMachine]
     worklog_defaults: DateRange
     unpriced_models: list[str]
-

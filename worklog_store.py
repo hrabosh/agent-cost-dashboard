@@ -235,7 +235,7 @@ class WorklogStore:
             rows = connection.execute(
                 """
                 SELECT machine_id, agent, session_uid, project_key, project_name,
-                       activity_spans, execution_spans, metrics_json
+                       activity_spans, execution_spans, branches_json, metrics_json
                 FROM synced_sessions
                 WHERE ended_at > ? AND started_at < ?
                 """,
@@ -254,6 +254,10 @@ class WorklogStore:
         machines_by_day: dict[str, dict[str, set[str]]] = defaultdict(
             lambda: defaultdict(set)
         )
+        branches: dict[str, set[str]] = defaultdict(set)
+        branches_by_day: dict[str, dict[str, set[str]]] = defaultdict(
+            lambda: defaultdict(set)
+        )
         sessions: dict[str, set[str]] = defaultdict(set)
         prompts_by_project: dict[str, dict[str, int]] = defaultdict(
             lambda: defaultdict(int)
@@ -263,12 +267,19 @@ class WorklogStore:
             worker = f'{row["machine_id"]}:{row["agent"]}:{row["session_uid"]}'
             names[key] = row["project_name"]
             metrics = json.loads(row["metrics_json"] or "{}")
+            row_branches = {
+                branch
+                for branch in json.loads(row["branches_json"] or "[]")
+                if isinstance(branch, str) and branch
+            }
+            branches[key].update(row_branches)
             for day, daily_metrics in metrics.get("daily", {}).items():
                 if start_date.isoformat() <= day <= end_date.isoformat():
                     prompts_by_project[key][day] += int(
                         daily_metrics.get("prompts", 0)
                     )
                     machines_by_day[key][day].add(row["machine_id"])
+                    branches_by_day[key][day].update(row_branches)
             for raw_start, raw_end in json.loads(row["activity_spans"]):
                 span_start = max(parse_iso(raw_start), start_utc)
                 span_end = min(parse_iso(raw_end), end_utc)
@@ -278,6 +289,7 @@ class WorklogStore:
                     machines[key].add(row["machine_id"])
                     for day in split_spans_by_day([(span_start, span_end)], tz):
                         machines_by_day[key][day].add(row["machine_id"])
+                        branches_by_day[key][day].update(row_branches)
                     sessions[key].add(f'{row["machine_id"]}:{row["session_uid"]}')
             for raw_start, raw_end in json.loads(row["execution_spans"] or "[]"):
                 span_start = max(parse_iso(raw_start), start_utc)
@@ -318,6 +330,7 @@ class WorklogStore:
                     "prompts": sum(prompts_by_project[key].values()),
                     "machines": len(machines[key]),
                     "machine_ids": sorted(machines[key]),
+                    "branches": sorted(branches[key]),
                     "sessions": len(sessions[key]),
                     "daily": [
                         {
@@ -334,6 +347,7 @@ class WorklogStore:
                             ),
                             "prompts": prompts_by_project[key].get(day, 0),
                             "machine_ids": sorted(machines_by_day[key].get(day, set())),
+                            "branches": sorted(branches_by_day[key].get(day, set())),
                         }
                         for day in sorted(
                             daily.keys()

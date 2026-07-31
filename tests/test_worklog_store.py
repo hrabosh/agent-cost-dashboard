@@ -96,6 +96,8 @@ class WorklogStoreTests(unittest.TestCase):
         )
         self.assertEqual(report[0]["prompts"], 3)
         self.assertEqual(report[0]["daily"][0]["prompts"], 3)
+        self.assertEqual(report[0]["branches"], ["feature/dashboard"])
+        self.assertEqual(report[0]["daily"][0]["branches"], ["feature/dashboard"])
 
     def test_report_includes_exact_execution_time(self):
         session = self.session(
@@ -236,6 +238,7 @@ class WorklogStoreTests(unittest.TestCase):
                     "execution_hours": 0.0,
                     "prompts": 0,
                     "machine_ids": ["desktop"],
+                    "branches": ["feature/dashboard"],
                 },
                 {
                     "date": "2026-07-16",
@@ -247,6 +250,7 @@ class WorklogStoreTests(unittest.TestCase):
                     "execution_hours": 0.0,
                     "prompts": 0,
                     "machine_ids": ["desktop"],
+                    "branches": ["feature/dashboard"],
                 },
             ],
         )

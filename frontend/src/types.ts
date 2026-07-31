@@ -113,6 +113,7 @@ export interface WorklogDay {
   execution_hours: number;
   prompts: number;
   machine_ids: string[];
+  branches: string[];
 }
 
 export interface WorklogProject {
@@ -127,6 +128,7 @@ export interface WorklogProject {
   prompts: number;
   machines: number;
   machine_ids: string[];
+  branches: string[];
   sessions: number;
   daily: WorklogDay[];
 }

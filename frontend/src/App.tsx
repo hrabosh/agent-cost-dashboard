@@ -617,6 +617,15 @@ function Projects({ data }: { data: DashboardResponse }) {
           </select>
         </label>
         <label>
+          <span>Branch</span>
+          <select value={branch} onChange={(event) => setBranch(event.target.value)}>
+            <option value="all">All branches</option>
+            {branches.map((item) => (
+              <option value={item} key={item}>{item}</option>
+            ))}
+          </select>
+        </label>
+        <label>
           <span>Device</span>
           <select value={machine} onChange={(event) => setMachine(event.target.value)}>
             <option value="all">All devices</option>
@@ -802,9 +811,10 @@ type WorklogDisplayRow = {
   executionSeconds: number;
   prompts: number;
   machineIds: string[];
+  branches: string[];
 };
 
-type TimeGroup = "none" | "project" | "date" | "device";
+type TimeGroup = "none" | "project" | "branch" | "date" | "device";
 
 function TimeRowsTable({ rows }: { rows: WorklogDisplayRow[] }) {
   return (
@@ -814,6 +824,7 @@ function TimeRowsTable({ rows }: { rows: WorklogDisplayRow[] }) {
           <tr>
             <th>Date</th>
             <th>Project</th>
+            <th>Branches</th>
             <th>Devices</th>
             <th className="numeric">Prompts</th>
             <th className="numeric">Wall-clock</th>
@@ -826,6 +837,7 @@ function TimeRowsTable({ rows }: { rows: WorklogDisplayRow[] }) {
             <tr key={`${row.projectKey}-${row.date}`}>
               <td>{row.date}</td>
               <td><strong>{displayProject(row.project)}</strong></td>
+              <td>{row.branches.join(", ") || "No branch"}</td>
               <td>{row.machineIds.join(", ") || "Unknown"}</td>
               <td className="numeric">{row.prompts}</td>
               <td className="numeric">{duration(row.seconds)}</td>
@@ -844,12 +856,16 @@ function TimeAccounting({ data }: { data: DashboardResponse }) {
   const [dateFrom, setDateFrom] = useState(data.worklog_defaults.from_date);
   const [dateTo, setDateTo] = useState(data.worklog_defaults.to_date);
   const [projectKey, setProjectKey] = useState("all");
+  const [branch, setBranch] = useState("all");
   const [machine, setMachine] = useState("all");
   const [group, setGroup] = useState<TimeGroup>("none");
   const projects = [...data.worklogs].sort((a, b) =>
     displayProject(a.project_name).localeCompare(displayProject(b.project_name)),
   );
   const machines = [...new Set(data.worklogs.flatMap((item) => item.machine_ids))].sort();
+  const branches = [...new Set(data.worklogs.flatMap((item) => item.branches))].sort(
+    (a, b) => a.localeCompare(b),
+  );
   const rows = useMemo(() => {
     const visible: WorklogDisplayRow[] = [];
     data.worklogs.forEach((project) => {
@@ -858,12 +874,20 @@ function TimeAccounting({ data }: { data: DashboardResponse }) {
         const machineIds = day.machine_ids.length
           ? day.machine_ids
           : project.machine_ids;
+        const dayBranches = day.branches.length ? day.branches : project.branches;
         if (
           (dateFrom && day.date < dateFrom) ||
           (dateTo && day.date > dateTo) ||
+          (branch !== "all" && !dayBranches.includes(branch)) ||
           (machine !== "all" && !machineIds.includes(machine)) ||
           (query &&
-            ![project.project_name, project.project_key, day.date, ...machineIds]
+            ![
+              project.project_name,
+              project.project_key,
+              day.date,
+              ...dayBranches,
+              ...machineIds,
+            ]
               .join(" ")
               .toLowerCase()
               .includes(query.toLowerCase()))
@@ -879,13 +903,14 @@ function TimeAccounting({ data }: { data: DashboardResponse }) {
           executionSeconds: day.execution_seconds,
           prompts: day.prompts,
           machineIds,
+          branches: dayBranches,
         });
       });
     });
     return visible.sort(
       (a, b) => b.date.localeCompare(a.date) || a.project.localeCompare(b.project),
     );
-  }, [data.worklogs, dateFrom, dateTo, machine, projectKey, query]);
+  }, [branch, data.worklogs, dateFrom, dateTo, machine, projectKey, query]);
   const totals = rows.reduce(
     (result, row) => ({
       wall: result.wall + row.seconds,
@@ -907,6 +932,8 @@ function TimeAccounting({ data }: { data: DashboardResponse }) {
       const key =
         group === "project"
           ? row.projectKey
+          : group === "branch"
+            ? row.branches.join(" + ") || "No branch"
           : group === "date"
             ? row.date
             : row.machineIds.join(" + ") || "Unknown device";
@@ -930,6 +957,7 @@ function TimeAccounting({ data }: { data: DashboardResponse }) {
     dateFrom !== data.worklog_defaults.from_date,
     dateTo !== data.worklog_defaults.to_date,
     projectKey !== "all",
+    branch !== "all",
     machine !== "all",
   ].filter(Boolean).length;
 
@@ -938,6 +966,7 @@ function TimeAccounting({ data }: { data: DashboardResponse }) {
     setDateFrom(data.worklog_defaults.from_date);
     setDateTo(data.worklog_defaults.to_date);
     setProjectKey("all");
+    setBranch("all");
     setMachine("all");
   }
 
@@ -1006,8 +1035,9 @@ function TimeAccounting({ data }: { data: DashboardResponse }) {
           <select value={group} onChange={(event) => setGroup(event.target.value as TimeGroup)}>
             <option value="none">No grouping</option>
             <option value="project">Project</option>
+            <option value="branch">Branch</option>
             <option value="date">Date</option>
-            <option value="device">Device combination</option>
+            <option value="device">Device</option>
           </select>
         </label>
         {activeFilters > 0 && (
