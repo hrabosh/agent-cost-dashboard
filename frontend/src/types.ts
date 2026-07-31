@@ -30,6 +30,11 @@ export interface SessionSummary {
   prompts: number;
   execution_time: number;
   tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  reasoning_tokens: number;
   cost: number;
   start: string | null;
   end: string | null;
@@ -152,4 +157,3 @@ export interface DashboardResponse {
   worklog_defaults: { from_date: string; to_date: string };
   unpriced_models: string[];
 }
-

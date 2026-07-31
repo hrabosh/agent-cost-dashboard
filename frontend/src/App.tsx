@@ -31,6 +31,7 @@ import type {
   DashboardResponse,
   JiraActivity,
   ProjectSummary,
+  SessionSummary,
 } from "./types";
 
 const nav = [
@@ -347,56 +348,211 @@ function Overview({ data }: { data: DashboardResponse }) {
   );
 }
 
-type ProjectGroup = "project" | "agent" | "machine";
+type ProjectGroup = "none" | "project" | "branch" | "agent" | "machine";
+
+function projectIdentity(project: ProjectSummary): string {
+  return JSON.stringify([project.agent, project.name]);
+}
+
+function sessionBranches(session: SessionSummary): string[] {
+  return [
+    ...session.branches,
+    ...session.subagent_sessions.flatMap(sessionBranches),
+  ].filter(Boolean);
+}
+
+function primaryBranch(session: SessionSummary): string {
+  return sessionBranches(session).at(-1) || "No branch";
+}
+
+function summarizeProjectSessions(
+  project: ProjectSummary,
+  sessions: SessionSummary[],
+): ProjectSummary {
+  const sum = (field: keyof SessionSummary) =>
+    sessions.reduce((total, session) => total + Number(session[field] || 0), 0);
+  const activity = sessions
+    .map((session) => session.start || session.end)
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1);
+  const llmTime = sum("llm_time");
+  const outputTokens = sum("output_tokens");
+  return {
+    ...project,
+    sessions: sessions.length,
+    session_items: sessions,
+    machines: [...new Set(sessions.map((session) => session.machine).filter(Boolean))].sort(),
+    messages: sum("messages"),
+    prompts: sum("prompts"),
+    execution_time: sum("execution_time"),
+    tokens: sum("tokens"),
+    cost: sum("cost"),
+    llm_time: llmTime,
+    tool_time: sum("tool_time"),
+    avg_tps: llmTime > 0 ? outputTokens / llmTime : 0,
+    last_activity: activity || null,
+  };
+}
 
 function Projects({ data }: { data: DashboardResponse }) {
   const [query, setQuery] = useState("");
   const [agent, setAgent] = useState("all");
   const [machine, setMachine] = useState("all");
-  const [group, setGroup] = useState<ProjectGroup>("project");
+  const [projectFilter, setProjectFilter] = useState("all");
+  const [branch, setBranch] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [group, setGroup] = useState<ProjectGroup>("none");
   const [minCost, setMinCost] = useState(0);
   const agents = [...new Set(data.projects.map((project) => project.agent))].sort();
   const machines = [...new Set(data.projects.flatMap((project) => project.machines))].sort();
+  const projects = [...data.projects].sort((a, b) =>
+    displayProject(a.name).localeCompare(displayProject(b.name)),
+  );
+  const branches = [
+    ...new Set(
+      data.projects.flatMap((project) =>
+        project.session_items.map(primaryBranch).filter((item) => item !== "No branch"),
+      ),
+    ),
+  ].sort((a, b) => a.localeCompare(b));
+  const hasSessionFilters =
+    machine !== "all" || branch !== "all" || Boolean(dateFrom) || Boolean(dateTo);
   const filtered = useMemo(
     () =>
       data.projects
-        .filter((project) => {
+        .map((project) => {
           const haystack = [
             project.name,
             project.agent,
             ...project.machines,
-            ...project.session_items.flatMap((session) => session.branches),
+            ...project.session_items.flatMap(sessionBranches),
           ]
             .join(" ")
             .toLowerCase();
-          return (
-            (!query || haystack.includes(query.toLowerCase())) &&
-            (agent === "all" || project.agent === agent) &&
-            (machine === "all" || project.machines.includes(machine)) &&
-            project.cost >= minCost
-          );
+          if (
+            (query && !haystack.includes(query.toLowerCase())) ||
+            (agent !== "all" && project.agent !== agent) ||
+            (projectFilter !== "all" && projectIdentity(project) !== projectFilter)
+          ) {
+            return null;
+          }
+          const sessions = project.session_items.filter((session) => {
+            const startDay = session.start?.slice(0, 10) || "";
+            return (
+              (machine === "all" || session.machine === machine) &&
+              (branch === "all" || primaryBranch(session) === branch) &&
+              (!dateFrom || (startDay && startDay >= dateFrom)) &&
+              (!dateTo || (startDay && startDay <= dateTo))
+            );
+          });
+          if (hasSessionFilters && sessions.length === 0) return null;
+          const visibleProject = hasSessionFilters
+            ? summarizeProjectSessions(project, sessions)
+            : project;
+          return visibleProject.cost >= minCost ? visibleProject : null;
         })
+        .filter((project): project is ProjectSummary => project !== null)
         .sort((a, b) => b.cost - a.cost),
-    [agent, data.projects, machine, minCost, query],
+    [
+      agent,
+      branch,
+      data.projects,
+      dateFrom,
+      dateTo,
+      hasSessionFilters,
+      machine,
+      minCost,
+      projectFilter,
+      query,
+    ],
   );
   const groups = useMemo(() => {
-    if (group === "project") return [["All projects", filtered]] as Array<[string, ProjectSummary[]]>;
+    if (group === "none") {
+      return [{ id: "all", label: "All projects", projects: filtered }];
+    }
+    if (group === "project") {
+      return filtered.map((project) => ({
+        id: `project-${projectIdentity(project)}`,
+        label: `${displayProject(project.name)} · ${project.agent}`,
+        projects: [project],
+      }));
+    }
     const result = new Map<string, ProjectSummary[]>();
     filtered.forEach((project) => {
-      const keys = group === "agent" ? [project.agent] : project.machines;
-      (keys.length ? keys : ["Unknown"]).forEach((key) =>
-        result.set(key, [...(result.get(key) ?? []), project]),
-      );
+      if (group === "branch") {
+        const sessionsByBranch = new Map<string, SessionSummary[]>();
+        project.session_items.forEach((session) => {
+          const key = primaryBranch(session);
+          sessionsByBranch.set(key, [...(sessionsByBranch.get(key) ?? []), session]);
+        });
+        sessionsByBranch.forEach((sessions, key) => {
+          result.set(key, [
+            ...(result.get(key) ?? []),
+            summarizeProjectSessions(project, sessions),
+          ]);
+        });
+        return;
+      }
+      if (group === "machine") {
+        const keys = project.machines.length ? project.machines : ["Unknown device"];
+        keys.forEach((key) => {
+          const sessions = project.session_items.filter(
+            (session) => session.machine === key,
+          );
+          result.set(key, [
+            ...(result.get(key) ?? []),
+            sessions.length ? summarizeProjectSessions(project, sessions) : project,
+          ]);
+        });
+        return;
+      }
+      result.set(project.agent || "Unknown agent", [
+        ...(result.get(project.agent || "Unknown agent") ?? []),
+        project,
+      ]);
     });
-    return [...result.entries()].sort(([a], [b]) => a.localeCompare(b));
+    return [...result.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([label, groupProjects]) => ({
+        id: `${group}-${label}`,
+        label,
+        projects: groupProjects.sort((a, b) => b.cost - a.cost),
+      }));
   }, [filtered, group]);
+  const visibleSessions = filtered.reduce(
+    (total, project) => total + project.sessions,
+    0,
+  );
+  const activeFilters = [
+    query,
+    agent !== "all",
+    machine !== "all",
+    projectFilter !== "all",
+    branch !== "all",
+    dateFrom,
+    dateTo,
+    minCost > 0,
+  ].filter(Boolean).length;
+
+  function resetFilters() {
+    setQuery("");
+    setAgent("all");
+    setMachine("all");
+    setProjectFilter("all");
+    setBranch("all");
+    setDateFrom("");
+    setDateTo("");
+    setMinCost(0);
+  }
 
   return (
     <>
       <SectionHead
         eyebrow="Work explorer"
         title="Projects and session activity"
-        detail={`${filtered.length} of ${data.projects.length} projects`}
+        detail={`${filtered.length} of ${data.projects.length} projects · ${visibleSessions} visible sessions`}
       />
       <div className="filter-bar">
         <label className="search-field">
@@ -411,6 +567,31 @@ function Projects({ data }: { data: DashboardResponse }) {
               <X size={15} />
             </button>
           )}
+        </label>
+        <label>
+          <span>Project</span>
+          <select
+            value={projectFilter}
+            onChange={(event) => setProjectFilter(event.target.value)}
+          >
+            <option value="all">All projects</option>
+            {projects.map((item) => (
+              <option value={projectIdentity(item)} key={projectIdentity(item)}>
+                {displayProject(item.name)} · {item.agent}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Branch</span>
+          <select value={branch} onChange={(event) => setBranch(event.target.value)}>
+            <option value="all">All branches</option>
+            {branches.map((item) => (
+              <option value={item} key={item}>
+                {item}
+              </option>
+            ))}
+          </select>
         </label>
         <label>
           <span>Agent</span>
@@ -435,6 +616,24 @@ function Projects({ data }: { data: DashboardResponse }) {
           </select>
         </label>
         <label>
+          <span>From</span>
+          <input
+            type="date"
+            value={dateFrom}
+            max={dateTo || undefined}
+            onChange={(event) => setDateFrom(event.target.value)}
+          />
+        </label>
+        <label>
+          <span>To</span>
+          <input
+            type="date"
+            value={dateTo}
+            min={dateFrom || undefined}
+            onChange={(event) => setDateTo(event.target.value)}
+          />
+        </label>
+        <label>
           <span>Minimum value</span>
           <select value={minCost} onChange={(event) => setMinCost(Number(event.target.value))}>
             <option value="0">Any value</option>
@@ -446,20 +645,31 @@ function Projects({ data }: { data: DashboardResponse }) {
         <label>
           <span>Group by</span>
           <select value={group} onChange={(event) => setGroup(event.target.value as ProjectGroup)}>
-            <option value="project">No grouping</option>
+            <option value="none">No grouping</option>
+            <option value="project">Project</option>
+            <option value="branch">Branch</option>
             <option value="agent">Agent</option>
             <option value="machine">Device</option>
           </select>
         </label>
+        {activeFilters > 0 && (
+          <button className="reset-filters" onClick={resetFilters}>
+            <X size={14} />
+            Reset {activeFilters}
+          </button>
+        )}
       </div>
 
       <div className="group-stack">
-        {groups.map(([label, projects]) => (
-          <section className="panel project-group" key={label}>
-            {group !== "project" && (
+        {groups.map((item) => (
+          <section className="panel project-group" key={item.id}>
+            {group !== "none" && (
               <div className="group-heading">
-                <h3>{label}</h3>
-                <span>{projects.length} projects</span>
+                <h3>{item.label}</h3>
+                <span>
+                  {item.projects.length} {item.projects.length === 1 ? "project" : "projects"} ·{" "}
+                  {item.projects.reduce((total, project) => total + project.sessions, 0)} sessions
+                </span>
               </div>
             )}
             <div className="table-scroll">
@@ -477,8 +687,8 @@ function Projects({ data }: { data: DashboardResponse }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {projects.map((project) => (
-                    <ProjectRow project={project} key={`${label}-${project.agent}-${project.name}`} />
+                  {item.projects.map((project) => (
+                    <ProjectRow project={project} key={`${item.id}-${project.agent}-${project.name}`} />
                   ))}
                 </tbody>
               </table>
@@ -489,7 +699,7 @@ function Projects({ data }: { data: DashboardResponse }) {
           <div className="panel empty">
             <Search size={22} />
             <strong>No projects match these filters</strong>
-            <span>Try broadening the search or minimum value.</span>
+            <span>Try broadening the date, branch, project, or minimum value.</span>
           </div>
         )}
       </div>
@@ -548,7 +758,7 @@ function ProjectRow({ project }: { project: ProjectSummary }) {
               {latestSessions.map((session) => (
                 <div className="session-line" key={session.uid}>
                   <span>{shortDate(session.start)}</span>
-                  <strong>{session.branches.at(-1) || "No branch recorded"}</strong>
+                  <strong>{primaryBranch(session)}</strong>
                   <span>{session.machine}</span>
                   <span>{duration(session.execution_time)}</span>
                   <span>{money(session.cost)}</span>

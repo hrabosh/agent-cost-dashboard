@@ -125,14 +125,17 @@ h3 { margin-top: 4px; font-size: 17px; letter-spacing: -.02em; }
 .meter { height: 3px; margin-top: 12px; border-radius: 3px; background: #e9e8e3; overflow: hidden; }
 .meter i { display: block; height: 100%; border-radius: inherit; background: var(--green); }
 
-.filter-bar { display: flex; align-items: end; gap: 10px; margin-bottom: 15px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #eae9e4; }
+.filter-bar { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin-bottom: 15px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #eae9e4; }
 .filter-bar label { display: grid; gap: 5px; color: #686a64; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
 .filter-bar input, .filter-bar select { height: 35px; border: 1px solid #d1d0ca; border-radius: 7px; outline: none; color: var(--ink); background: var(--surface); font-size: 11px; text-transform: none; letter-spacing: 0; }
-.filter-bar select { min-width: 120px; padding: 0 28px 0 9px; }
-.search-field { position: relative; flex: 1; min-width: 230px; }
+.filter-bar input[type="date"] { min-width: 128px; padding: 0 8px; }
+.filter-bar select { min-width: 128px; max-width: 230px; padding: 0 28px 0 9px; }
+.search-field { position: relative; flex: 1 1 280px; min-width: 230px; }
 .search-field > svg { position: absolute; left: 10px; bottom: 10px; color: #7a7c76; z-index: 2; }
 .search-field input { width: 100%; padding: 0 33px; }
 .search-field button { position: absolute; right: 7px; bottom: 6px; display: grid; place-items: center; width: 24px; height: 24px; border: 0; color: var(--muted); background: transparent; cursor: pointer; }
+.reset-filters { display: inline-flex; align-items: center; gap: 5px; height: 35px; padding: 0 10px; border: 1px solid #c9c8c1; border-radius: 7px; color: #565951; background: var(--surface); font-size: 10px; font-weight: 700; cursor: pointer; }
+.reset-filters:hover { border-color: #94978f; color: var(--green); }
 .group-stack { display: grid; gap: 13px; }
 .project-group { overflow: hidden; }
 .group-heading { display: flex; justify-content: space-between; padding: 16px 17px 13px; border-bottom: 1px solid var(--line); }
