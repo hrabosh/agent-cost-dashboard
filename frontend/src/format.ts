@@ -15,8 +15,9 @@ export function compact(value: number): string {
 
 export function duration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0m";
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.round((seconds % 3600) / 60);
+  const totalMinutes = Math.round(seconds / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
   if (!hours) return `${minutes}m`;
   return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
 }
@@ -33,4 +34,3 @@ export function displayProject(value: string): string {
   const clean = value.replaceAll("\\", "/").split("/").filter(Boolean).at(-1);
   return clean || value || "Unknown project";
 }
-

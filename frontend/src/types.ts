@@ -103,6 +103,34 @@ export interface ToolSummary extends NamedTool {
   time_share: number;
 }
 
+export interface WorklogDay {
+  date: string;
+  seconds: number;
+  hours: number;
+  agent_seconds: number;
+  agent_hours: number;
+  execution_seconds: number;
+  execution_hours: number;
+  prompts: number;
+  machine_ids: string[];
+}
+
+export interface WorklogProject {
+  project_key: string;
+  project_name: string;
+  seconds: number;
+  hours: number;
+  agent_seconds: number;
+  agent_hours: number;
+  execution_seconds: number;
+  execution_hours: number;
+  prompts: number;
+  machines: number;
+  machine_ids: string[];
+  sessions: number;
+  daily: WorklogDay[];
+}
+
 export interface JiraIssue {
   key: string;
   summary: string;
@@ -153,6 +181,7 @@ export interface DashboardResponse {
   daily_stats: DailyCostPoint[];
   models: ModelSummary[];
   tools: ToolSummary[];
+  worklogs: WorklogProject[];
   jira: JiraDashboard;
   worklog_defaults: { from_date: string; to_date: string };
   unpriced_models: string[];

@@ -37,6 +37,7 @@ import type {
 const nav = [
   { to: "/", label: "Overview", icon: Gauge },
   { to: "/projects", label: "Projects & sessions", icon: FolderKanban },
+  { to: "/time", label: "Time accounting", icon: Clock3 },
   { to: "/jira", label: "Jira reconciliation", icon: TicketCheck },
   { to: "/models", label: "Models & tools", icon: Bot },
 ];
@@ -238,9 +239,9 @@ function Overview({ data }: { data: DashboardResponse }) {
           tone="green"
         />
         <Metric
-          label="Agent time this month"
-          value={duration(summary.month_agent_seconds)}
-          note={`${duration(summary.month_execution_seconds)} active execution`}
+          label="Working time this month"
+          value={duration(summary.month_wall_seconds)}
+          note={`${duration(summary.month_agent_seconds)} agent · ${duration(summary.month_execution_seconds)} execution`}
         />
         <Metric
           label="Active footprint"
@@ -254,6 +255,17 @@ function Overview({ data }: { data: DashboardResponse }) {
           note={`${jira.missing_count} missing · ${jira.underlogged_count} time gaps`}
           tone="amber"
         />
+      </div>
+
+      <div className="time-summary-link">
+        <Clock3 size={15} />
+        <span>
+          The headline is wall-clock time. Agent and execution time measure the same
+          work differently and should not be added together.
+        </span>
+        <AppLink to="/time" className="text-link">
+          See how time is measured
+        </AppLink>
       </div>
 
       <div className="overview-grid">
@@ -680,7 +692,16 @@ function Projects({ data }: { data: DashboardResponse }) {
                     <th>Agent / devices</th>
                     <th>Last activity</th>
                     <th className="numeric">Sessions</th>
-                    <th className="numeric">Execution</th>
+                    <th
+                      className="numeric"
+                      title={
+                        hasSessionFilters
+                          ? "Completed prompt processing in the visible sessions"
+                          : "Completed prompt processing across all collected sessions"
+                      }
+                    >
+                      Execution ({hasSessionFilters ? "filtered" : "all data"})
+                    </th>
                     <th className="numeric">Tokens</th>
                     <th className="numeric">Value</th>
                     <th />
@@ -768,6 +789,244 @@ function ProjectRow({ project }: { project: ProjectSummary }) {
           </td>
         </tr>
       )}
+    </>
+  );
+}
+
+type WorklogDisplayRow = {
+  projectKey: string;
+  project: string;
+  date: string;
+  seconds: number;
+  agentSeconds: number;
+  executionSeconds: number;
+  prompts: number;
+  machineIds: string[];
+};
+
+function TimeAccounting({ data }: { data: DashboardResponse }) {
+  const [dateFrom, setDateFrom] = useState(data.worklog_defaults.from_date);
+  const [dateTo, setDateTo] = useState(data.worklog_defaults.to_date);
+  const [projectKey, setProjectKey] = useState("all");
+  const rows = useMemo(() => {
+    const visible: WorklogDisplayRow[] = [];
+    data.worklogs.forEach((project) => {
+      if (projectKey !== "all" && project.project_key !== projectKey) return;
+      project.daily.forEach((day) => {
+        const machineIds = day.machine_ids.length
+          ? day.machine_ids
+          : project.machine_ids;
+        if (
+          (dateFrom && day.date < dateFrom) ||
+          (dateTo && day.date > dateTo)
+        ) {
+          return;
+        }
+        visible.push({
+          projectKey: project.project_key,
+          project: project.project_name,
+          date: day.date,
+          seconds: day.seconds,
+          agentSeconds: day.agent_seconds,
+          executionSeconds: day.execution_seconds,
+          prompts: day.prompts,
+          machineIds,
+        });
+      });
+    });
+    return visible.sort(
+      (a, b) => b.date.localeCompare(a.date) || a.project.localeCompare(b.project),
+    );
+  }, [data.worklogs, dateFrom, dateTo, projectKey]);
+  const totals = rows.reduce(
+    (result, row) => ({
+      wall: result.wall + row.seconds,
+      agent: result.agent + row.agentSeconds,
+      execution: result.execution + row.executionSeconds,
+      prompts: result.prompts + row.prompts,
+    }),
+    { wall: 0, agent: 0, execution: 0, prompts: 0 },
+  );
+  const uncoveredRows = rows.filter(
+    (row) => row.seconds > 0 && row.executionSeconds === 0,
+  ).length;
+
+  return (
+    <>
+      <SectionHead
+        eyebrow="Time accounting"
+        title="What the time numbers mean"
+        detail={`${dateFrom || "First activity"} — ${dateTo || "Today"}`}
+      />
+
+      <div className="metric-grid time-metric-grid">
+        <Metric
+          label="Wall-clock time"
+          value={duration(totals.wall)}
+          note="Elapsed active work, overlap removed"
+          tone="green"
+        />
+        <Metric
+          label="Agent time"
+          value={duration(totals.agent)}
+          note="Session activity; parallel agents add up"
+          tone="slate"
+        />
+        <Metric
+          label="Execution time"
+          value={duration(totals.execution)}
+          note={`${totals.prompts} human prompts recorded`}
+          tone="amber"
+        />
+      </div>
+
+      <section className="panel timing-panel">
+        <div className="panel-title-row">
+          <div>
+            <span className="eyebrow">Measurement guide</span>
+            <h3>Five views of the same activity</h3>
+          </div>
+          <span className="quiet-badge">Do not add these together</span>
+        </div>
+        <div className="timing-definition-grid">
+          <article>
+            <i className="time-dot wall" />
+            <div>
+              <strong>Wall-clock time</strong>
+              <p>
+                Active heartbeat spans merged per project. Overlapping sessions and
+                devices count once, making this the closest elapsed-work measure.
+              </p>
+            </div>
+          </article>
+          <article>
+            <i className="time-dot agent" />
+            <div>
+              <strong>Agent time</strong>
+              <p>
+                Activity spans counted per session. Gaps up to 10 minutes remain in
+                the span, and parallel sessions count separately.
+              </p>
+            </div>
+          </article>
+          <article>
+            <i className="time-dot execution" />
+            <div>
+              <strong>Execution time</strong>
+              <p>
+                Completed prompt processing. Codex uses <code>task_started</code> and
+                <code> task_complete</code>; Claude measures a human prompt through
+                <code> end_turn</code> or <code>stop_sequence</code>. Waiting between
+                prompts is excluded.
+              </p>
+            </div>
+          </article>
+          <article>
+            <i className="time-dot llm" />
+            <div>
+              <strong>LLM time · {duration(data.summary.llm_time)} all data</strong>
+              <p>
+                Time waiting for model responses when reliable request timestamps
+                exist. This is part of execution, not additional time.
+              </p>
+            </div>
+          </article>
+          <article>
+            <i className="time-dot tool" />
+            <div>
+              <strong>Tool time · {duration(data.summary.tool_time)} all data</strong>
+              <p>
+                Elapsed time in shell commands, searches, and other tools. Parallel
+                or nested calls can overlap other measurements.
+              </p>
+            </div>
+          </article>
+        </div>
+        <p className="timing-caveat">
+          Wall-clock, agent, and execution totals above use the selected worklog
+          period. LLM and tool totals are diagnostic components across all collected
+          sessions because v2 does not yet store them per worklog day.
+        </p>
+      </section>
+
+      <div className="filter-bar time-filters">
+        <label>
+          <span>From</span>
+          <input
+            type="date"
+            value={dateFrom}
+            max={dateTo || undefined}
+            onChange={(event) => setDateFrom(event.target.value)}
+          />
+        </label>
+        <label>
+          <span>To</span>
+          <input
+            type="date"
+            value={dateTo}
+            min={dateFrom || undefined}
+            onChange={(event) => setDateTo(event.target.value)}
+          />
+        </label>
+        <label>
+          <span>Project</span>
+          <select value={projectKey} onChange={(event) => setProjectKey(event.target.value)}>
+            <option value="all">All projects</option>
+            {data.worklogs.map((project) => (
+              <option value={project.project_key} key={project.project_key}>
+                {displayProject(project.project_name)}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {uncoveredRows > 0 && (
+        <div className="notice">
+          <CircleAlert size={16} />
+          {uncoveredRows} {uncoveredRows === 1 ? "row has" : "rows have"} activity
+          but no completed execution marker. Wall-clock and agent time are still
+          available for those rows.
+        </div>
+      )}
+
+      <section className="panel time-table">
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Project</th>
+                <th>Devices</th>
+                <th className="numeric">Prompts</th>
+                <th className="numeric">Wall-clock</th>
+                <th className="numeric">Agent time</th>
+                <th className="numeric">Execution</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={`${row.projectKey}-${row.date}`}>
+                  <td>{row.date}</td>
+                  <td><strong>{displayProject(row.project)}</strong></td>
+                  <td>{row.machineIds.join(", ") || "Unknown"}</td>
+                  <td className="numeric">{row.prompts}</td>
+                  <td className="numeric">{duration(row.seconds)}</td>
+                  <td className="numeric">{duration(row.agentSeconds)}</td>
+                  <td className="numeric strong-number">{duration(row.executionSeconds)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {!rows.length && (
+          <div className="empty table-empty">
+            <Clock3 size={22} />
+            <strong>No synced work in this period</strong>
+            <span>Choose a wider date range or check that workstation sync is active.</span>
+          </div>
+        )}
+      </section>
     </>
   );
 }
@@ -1233,6 +1492,8 @@ function Shell({
         <div className="page">
           {route === "/projects" ? (
             <Projects data={data} />
+          ) : route === "/time" ? (
+            <TimeAccounting data={data} />
           ) : route === "/jira" ? (
             <Jira data={data} />
           ) : route === "/models" ? (
