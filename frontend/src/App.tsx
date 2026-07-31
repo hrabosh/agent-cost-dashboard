@@ -804,10 +804,52 @@ type WorklogDisplayRow = {
   machineIds: string[];
 };
 
+type TimeGroup = "none" | "project" | "date" | "device";
+
+function TimeRowsTable({ rows }: { rows: WorklogDisplayRow[] }) {
+  return (
+    <div className="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Project</th>
+            <th>Devices</th>
+            <th className="numeric">Prompts</th>
+            <th className="numeric">Wall-clock</th>
+            <th className="numeric">Agent time</th>
+            <th className="numeric">Execution</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={`${row.projectKey}-${row.date}`}>
+              <td>{row.date}</td>
+              <td><strong>{displayProject(row.project)}</strong></td>
+              <td>{row.machineIds.join(", ") || "Unknown"}</td>
+              <td className="numeric">{row.prompts}</td>
+              <td className="numeric">{duration(row.seconds)}</td>
+              <td className="numeric">{duration(row.agentSeconds)}</td>
+              <td className="numeric strong-number">{duration(row.executionSeconds)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function TimeAccounting({ data }: { data: DashboardResponse }) {
+  const [query, setQuery] = useState("");
   const [dateFrom, setDateFrom] = useState(data.worklog_defaults.from_date);
   const [dateTo, setDateTo] = useState(data.worklog_defaults.to_date);
   const [projectKey, setProjectKey] = useState("all");
+  const [machine, setMachine] = useState("all");
+  const [group, setGroup] = useState<TimeGroup>("none");
+  const projects = [...data.worklogs].sort((a, b) =>
+    displayProject(a.project_name).localeCompare(displayProject(b.project_name)),
+  );
+  const machines = [...new Set(data.worklogs.flatMap((item) => item.machine_ids))].sort();
   const rows = useMemo(() => {
     const visible: WorklogDisplayRow[] = [];
     data.worklogs.forEach((project) => {
@@ -818,7 +860,13 @@ function TimeAccounting({ data }: { data: DashboardResponse }) {
           : project.machine_ids;
         if (
           (dateFrom && day.date < dateFrom) ||
-          (dateTo && day.date > dateTo)
+          (dateTo && day.date > dateTo) ||
+          (machine !== "all" && !machineIds.includes(machine)) ||
+          (query &&
+            ![project.project_name, project.project_key, day.date, ...machineIds]
+              .join(" ")
+              .toLowerCase()
+              .includes(query.toLowerCase()))
         ) {
           return;
         }
@@ -837,7 +885,7 @@ function TimeAccounting({ data }: { data: DashboardResponse }) {
     return visible.sort(
       (a, b) => b.date.localeCompare(a.date) || a.project.localeCompare(b.project),
     );
-  }, [data.worklogs, dateFrom, dateTo, projectKey]);
+  }, [data.worklogs, dateFrom, dateTo, machine, projectKey, query]);
   const totals = rows.reduce(
     (result, row) => ({
       wall: result.wall + row.seconds,
@@ -850,14 +898,132 @@ function TimeAccounting({ data }: { data: DashboardResponse }) {
   const uncoveredRows = rows.filter(
     (row) => row.seconds > 0 && row.executionSeconds === 0,
   ).length;
+  const groups = useMemo(() => {
+    if (group === "none") {
+      return [{ id: "all", label: "All time records", rows }];
+    }
+    const grouped = new Map<string, WorklogDisplayRow[]>();
+    rows.forEach((row) => {
+      const key =
+        group === "project"
+          ? row.projectKey
+          : group === "date"
+            ? row.date
+            : row.machineIds.join(" + ") || "Unknown device";
+      grouped.set(key, [...(grouped.get(key) ?? []), row]);
+    });
+    return [...grouped.entries()]
+      .sort(([a], [b]) =>
+        group === "date" ? b.localeCompare(a) : a.localeCompare(b),
+      )
+      .map(([key, groupRows]) => ({
+        id: `${group}-${key}`,
+        label:
+          group === "project"
+            ? displayProject(groupRows[0].project)
+            : key,
+        rows: groupRows,
+      }));
+  }, [group, rows]);
+  const activeFilters = [
+    query,
+    dateFrom !== data.worklog_defaults.from_date,
+    dateTo !== data.worklog_defaults.to_date,
+    projectKey !== "all",
+    machine !== "all",
+  ].filter(Boolean).length;
+
+  function resetFilters() {
+    setQuery("");
+    setDateFrom(data.worklog_defaults.from_date);
+    setDateTo(data.worklog_defaults.to_date);
+    setProjectKey("all");
+    setMachine("all");
+  }
 
   return (
     <>
       <SectionHead
         eyebrow="Time accounting"
         title="What the time numbers mean"
-        detail={`${dateFrom || "First activity"} — ${dateTo || "Today"}`}
+        detail={`${rows.length} visible records · ${dateFrom || "First activity"} — ${dateTo || "Today"}`}
       />
+
+      <div className="filter-bar time-filters">
+        <label className="search-field">
+          <Search size={16} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search project, device, date…"
+          />
+          {query && (
+            <button onClick={() => setQuery("")} aria-label="Clear search">
+              <X size={15} />
+            </button>
+          )}
+        </label>
+        <label>
+          <span>Project</span>
+          <select value={projectKey} onChange={(event) => setProjectKey(event.target.value)}>
+            <option value="all">All projects</option>
+            {projects.map((project) => (
+              <option value={project.project_key} key={project.project_key}>
+                {displayProject(project.project_name)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Device</span>
+          <select value={machine} onChange={(event) => setMachine(event.target.value)}>
+            <option value="all">All devices</option>
+            {machines.map((item) => (
+              <option value={item} key={item}>{item}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>From</span>
+          <input
+            type="date"
+            value={dateFrom}
+            max={dateTo || undefined}
+            onChange={(event) => setDateFrom(event.target.value)}
+          />
+        </label>
+        <label>
+          <span>To</span>
+          <input
+            type="date"
+            value={dateTo}
+            min={dateFrom || undefined}
+            onChange={(event) => setDateTo(event.target.value)}
+          />
+        </label>
+        <label>
+          <span>Group by</span>
+          <select value={group} onChange={(event) => setGroup(event.target.value as TimeGroup)}>
+            <option value="none">No grouping</option>
+            <option value="project">Project</option>
+            <option value="date">Date</option>
+            <option value="device">Device combination</option>
+          </select>
+        </label>
+        {activeFilters > 0 && (
+          <button className="reset-filters" onClick={resetFilters}>
+            <X size={14} />
+            Reset {activeFilters}
+          </button>
+        )}
+      </div>
+
+      {machine !== "all" && (
+        <p className="time-filter-note">
+          Device filtering selects complete project-day records involving {machine};
+          the API does not split those durations between devices.
+        </p>
+      )}
 
       <div className="metric-grid time-metric-grid">
         <Metric
@@ -949,38 +1115,6 @@ function TimeAccounting({ data }: { data: DashboardResponse }) {
         </p>
       </section>
 
-      <div className="filter-bar time-filters">
-        <label>
-          <span>From</span>
-          <input
-            type="date"
-            value={dateFrom}
-            max={dateTo || undefined}
-            onChange={(event) => setDateFrom(event.target.value)}
-          />
-        </label>
-        <label>
-          <span>To</span>
-          <input
-            type="date"
-            value={dateTo}
-            min={dateFrom || undefined}
-            onChange={(event) => setDateTo(event.target.value)}
-          />
-        </label>
-        <label>
-          <span>Project</span>
-          <select value={projectKey} onChange={(event) => setProjectKey(event.target.value)}>
-            <option value="all">All projects</option>
-            {data.worklogs.map((project) => (
-              <option value={project.project_key} key={project.project_key}>
-                {displayProject(project.project_name)}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-
       {uncoveredRows > 0 && (
         <div className="notice">
           <CircleAlert size={16} />
@@ -990,43 +1124,40 @@ function TimeAccounting({ data }: { data: DashboardResponse }) {
         </div>
       )}
 
-      <section className="panel time-table">
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Project</th>
-                <th>Devices</th>
-                <th className="numeric">Prompts</th>
-                <th className="numeric">Wall-clock</th>
-                <th className="numeric">Agent time</th>
-                <th className="numeric">Execution</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={`${row.projectKey}-${row.date}`}>
-                  <td>{row.date}</td>
-                  <td><strong>{displayProject(row.project)}</strong></td>
-                  <td>{row.machineIds.join(", ") || "Unknown"}</td>
-                  <td className="numeric">{row.prompts}</td>
-                  <td className="numeric">{duration(row.seconds)}</td>
-                  <td className="numeric">{duration(row.agentSeconds)}</td>
-                  <td className="numeric strong-number">{duration(row.executionSeconds)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      <div className="group-stack">
+        {groups.map((item) => {
+          const groupTotals = item.rows.reduce(
+            (result, row) => ({
+              wall: result.wall + row.seconds,
+              agent: result.agent + row.agentSeconds,
+              execution: result.execution + row.executionSeconds,
+            }),
+            { wall: 0, agent: 0, execution: 0 },
+          );
+          return (
+            <section className="panel time-table time-group" key={item.id}>
+              {group !== "none" && (
+                <div className="group-heading">
+                  <h3>{item.label}</h3>
+                  <span>
+                    {item.rows.length} {item.rows.length === 1 ? "record" : "records"} ·{" "}
+                    {duration(groupTotals.wall)} wall · {duration(groupTotals.agent)} agent ·{" "}
+                    {duration(groupTotals.execution)} execution
+                  </span>
+                </div>
+              )}
+              <TimeRowsTable rows={item.rows} />
+            </section>
+          );
+        })}
         {!rows.length && (
-          <div className="empty table-empty">
+          <div className="panel empty table-empty">
             <Clock3 size={22} />
-            <strong>No synced work in this period</strong>
-            <span>Choose a wider date range or check that workstation sync is active.</span>
+            <strong>No time records match these filters</strong>
+            <span>Reset filters, widen the date range, or check workstation sync.</span>
           </div>
         )}
-      </section>
+      </div>
     </>
   );
 }
