@@ -772,10 +772,151 @@ function ProjectRow({ project }: { project: ProjectSummary }) {
   );
 }
 
+type JiraGroup = "ticket" | "project" | "date" | "state" | "none";
+
+type JiraDisplayRow = JiraActivity & {
+  date_end: string;
+  records: JiraActivity[];
+};
+
+function aggregateJiraRows(rows: JiraActivity[]): JiraDisplayRow {
+  const ordered = [...rows].sort((a, b) => b.date.localeCompare(a.date));
+  const dates = ordered.map((row) => row.date).sort();
+  const dashboardSeconds = ordered.reduce(
+    (total, row) => total + row.dashboard_seconds,
+    0,
+  );
+  const jiraSeconds = ordered.reduce(
+    (total, row) => total + row.jira_seconds,
+    0,
+  );
+  const state: JiraActivity["state"] = ordered.some((row) => row.state === "missing")
+    ? "missing"
+    : ordered.some((row) => row.state === "under")
+      ? "under"
+      : "covered";
+  return {
+    ...ordered[0],
+    date: dates[0],
+    date_end: dates.at(-1) || dates[0],
+    dashboard_seconds: dashboardSeconds,
+    jira_seconds: jiraSeconds,
+    delta_seconds: dashboardSeconds - jiraSeconds,
+    projects: [...new Set(ordered.flatMap((row) => row.projects))].sort(),
+    branches: [...new Set(ordered.flatMap((row) => row.branches))].sort(),
+    state,
+    records: ordered,
+  };
+}
+
+function groupJiraByTicket(rows: JiraActivity[]): JiraDisplayRow[] {
+  const byTicket = new Map<string, JiraActivity[]>();
+  rows.forEach((row) =>
+    byTicket.set(row.key, [...(byTicket.get(row.key) ?? []), row]),
+  );
+  return [...byTicket.values()]
+    .map(aggregateJiraRows)
+    .sort((a, b) => {
+      const severity = { missing: 0, under: 1, covered: 2 };
+      return severity[a.state] - severity[b.state] || b.date_end.localeCompare(a.date_end);
+    });
+}
+
+function JiraRow({ row }: { row: JiraDisplayRow }) {
+  const [open, setOpen] = useState(false);
+  const period =
+    row.date === row.date_end ? row.date : `${row.date} — ${row.date_end}`;
+  return (
+    <>
+      <tr className={open ? "row-open" : ""}>
+        <td>
+          <a
+            className="ticket-key"
+            href={row.issue.url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {row.key}
+          </a>
+          <span className="muted-line">
+            {period}
+            {row.records.length > 1 ? ` · ${row.records.length} days` : ""}
+          </span>
+        </td>
+        <td>
+          <strong>{row.issue.summary}</strong>
+          <span className="muted-line">{row.issue.status}</span>
+        </td>
+        <td>{row.projects.map(displayProject).join(", ")}</td>
+        <td className="numeric">{duration(row.dashboard_seconds)}</td>
+        <td className="numeric">{duration(row.jira_seconds)}</td>
+        <td className="numeric strong-number">
+          {row.delta_seconds < 0 ? "−" : row.delta_seconds > 0 ? "+" : ""}
+          {duration(Math.abs(row.delta_seconds))}
+        </td>
+        <td>
+          <JiraState state={row.state} />
+        </td>
+        <td>
+          {row.records.length > 1 && (
+            <button
+              className="icon-button"
+              onClick={() => setOpen((value) => !value)}
+              aria-label={`Toggle daily records for ${row.key}`}
+              aria-expanded={open}
+            >
+              <ChevronDown className={open ? "rotated" : ""} size={17} />
+            </button>
+          )}
+        </td>
+      </tr>
+      {open && (
+        <tr className="detail-row jira-detail-row">
+          <td colSpan={8}>
+            <div className="jira-day-list">
+              <div className="jira-day-header">
+                <span>Date</span>
+                <span>Projects / branches</span>
+                <span>Agent</span>
+                <span>Jira</span>
+                <span>Gap</span>
+                <span>Status</span>
+              </div>
+              {row.records.map((record) => (
+                <div className="jira-day-line" key={`${record.key}-${record.date}`}>
+                  <span>{record.date}</span>
+                  <span>
+                    <strong>{record.projects.map(displayProject).join(", ")}</strong>
+                    <small>{record.branches.join(", ") || "No branch recorded"}</small>
+                  </span>
+                  <span>{duration(record.dashboard_seconds)}</span>
+                  <span>{duration(record.jira_seconds)}</span>
+                  <span>
+                    {record.delta_seconds < 0
+                      ? "−"
+                      : record.delta_seconds > 0
+                        ? "+"
+                        : ""}
+                    {duration(Math.abs(record.delta_seconds))}
+                  </span>
+                  <span>
+                    <JiraState state={record.state} />
+                  </span>
+                </div>
+              ))}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
 function Jira({ data }: { data: DashboardResponse }) {
   const jira = data.jira;
   const [state, setState] = useState("attention");
   const [query, setQuery] = useState("");
+  const [group, setGroup] = useState<JiraGroup>("ticket");
   if (jira.status !== "ok") {
     return (
       <>
@@ -790,21 +931,96 @@ function Jira({ data }: { data: DashboardResponse }) {
       </>
     );
   }
-  const rows = jira.activity.filter((row) => {
-    const matchesState =
-      state === "all" ||
-      (state === "attention" ? row.state !== "covered" : row.state === state);
-    const haystack = [row.key, row.issue.summary, row.issue.status, ...row.projects, ...row.branches]
+  const matchesState = (row: JiraActivity | JiraDisplayRow) =>
+    state === "all" ||
+    (state === "attention" ? row.state !== "covered" : row.state === state);
+  const searchedRows = jira.activity.filter((row) => {
+    const haystack = [
+      row.key,
+      row.issue.summary,
+      row.issue.status,
+      ...row.projects,
+      ...row.branches,
+    ]
       .join(" ")
       .toLowerCase();
-    return matchesState && (!query || haystack.includes(query.toLowerCase()));
+    return !query || haystack.includes(query.toLowerCase());
   });
+  const groups = (() => {
+    if (group === "ticket") {
+      return [
+        {
+          id: "tickets",
+          label: "Tickets",
+          rows: groupJiraByTicket(searchedRows).filter(matchesState),
+        },
+      ];
+    }
+    if (group === "none") {
+      return [
+        {
+          id: "records",
+          label: "Ticket-days",
+          rows: searchedRows
+            .filter(matchesState)
+            .map((row) => aggregateJiraRows([row]))
+            .sort((a, b) => b.date.localeCompare(a.date)),
+        },
+      ];
+    }
+    const result = new Map<string, JiraActivity[]>();
+    searchedRows.forEach((row) => {
+      const keys =
+        group === "project"
+          ? row.projects.map(displayProject)
+          : group === "date"
+            ? [row.date]
+            : [row.state];
+      (keys.length ? keys : ["No project"]).forEach((key) =>
+        result.set(key, [...(result.get(key) ?? []), row]),
+      );
+    });
+    const stateLabels = {
+      missing: "Missing worklog",
+      under: "Time gap",
+      covered: "Covered",
+    };
+    return [...result.entries()]
+      .sort(([a], [b]) =>
+        group === "date" ? b.localeCompare(a) : a.localeCompare(b),
+      )
+      .map(([key, groupRows]) => ({
+        id: `${group}-${key}`,
+        label:
+          group === "state"
+            ? stateLabels[key as keyof typeof stateLabels] || key
+            : key,
+        rows: group === "date"
+          ? groupRows
+              .filter(matchesState)
+              .map((row) => aggregateJiraRows([row]))
+          : group === "state"
+            ? groupJiraByTicket(groupRows.filter(matchesState))
+            : groupJiraByTicket(groupRows).filter(matchesState),
+      }))
+      .filter((item) => item.rows.length > 0);
+  })();
+  const visibleRecords = new Map(
+    groups.flatMap((item) =>
+      item.rows.flatMap((row) =>
+        row.records.map((record) => [`${record.key}-${record.date}`, record] as const),
+      ),
+    ),
+  );
+  const visibleTasks = new Set(
+    [...visibleRecords.values()].map((row) => row.key),
+  ).size;
   return (
     <>
       <SectionHead
         eyebrow="Reconciliation"
         title="Jira worklog review"
-        detail={`Connected as ${jira.account_name}`}
+        detail={`Connected as ${jira.account_name} · ${visibleTasks} tasks · ${visibleRecords.size} ticket-days`}
       />
       <div className="metric-grid jira-metrics">
         <Metric label="Visible active tickets" value={`${jira.active_issue_count}`} note="Assigned and unresolved" />
@@ -827,48 +1043,66 @@ function Jira({ data }: { data: DashboardResponse }) {
             <option value="all">All states</option>
           </select>
         </label>
+        <label>
+          <span>Group by</span>
+          <select
+            value={group}
+            onChange={(event) => setGroup(event.target.value as JiraGroup)}
+          >
+            <option value="ticket">Ticket</option>
+            <option value="project">Project</option>
+            <option value="date">Day</option>
+            <option value="state">Reconciliation state</option>
+            <option value="none">No grouping</option>
+          </select>
+        </label>
       </div>
-      <section className="panel">
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Date / ticket</th>
-                <th>Issue</th>
-                <th>Projects</th>
-                <th className="numeric">Agent</th>
-                <th className="numeric">Jira</th>
-                <th className="numeric">Gap</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={`${row.key}-${row.date}`}>
-                  <td>
-                    <a className="ticket-key" href={row.issue.url} target="_blank" rel="noreferrer">
-                      {row.key}
-                    </a>
-                    <span className="muted-line">{row.date}</span>
-                  </td>
-                  <td>
-                    <strong>{row.issue.summary}</strong>
-                    <span className="muted-line">{row.issue.status}</span>
-                  </td>
-                  <td>{row.projects.map(displayProject).join(", ")}</td>
-                  <td className="numeric">{duration(row.dashboard_seconds)}</td>
-                  <td className="numeric">{duration(row.jira_seconds)}</td>
-                  <td className="numeric strong-number">{duration(Math.abs(row.delta_seconds))}</td>
-                  <td>
-                    <JiraState state={row.state} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {!rows.length && <div className="empty table-empty"><Check size={21} /><strong>No matching ticket-days</strong></div>}
-      </section>
+      <div className="group-stack">
+        {groups.map((item) => (
+          <section className="panel jira-group" key={item.id}>
+            {!["ticket", "none"].includes(group) && (
+              <div className="group-heading">
+                <h3>{item.label}</h3>
+                <span>
+                  {item.rows.length} {item.rows.length === 1 ? "task" : "tasks"} ·{" "}
+                  {item.rows.reduce(
+                    (total, row) => total + row.records.length,
+                    0,
+                  )}{" "}
+                  ticket-days
+                </span>
+              </div>
+            )}
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Task / period</th>
+                    <th>Issue</th>
+                    <th>Projects</th>
+                    <th className="numeric">Agent</th>
+                    <th className="numeric">Jira</th>
+                    <th className="numeric">Gap</th>
+                    <th>Status</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {item.rows.map((row) => (
+                    <JiraRow row={row} key={`${item.id}-${row.key}`} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ))}
+        {!visibleRecords.size && (
+          <div className="panel empty table-empty">
+            <Check size={21} />
+            <strong>No matching ticket-days</strong>
+          </div>
+        )}
+      </div>
     </>
   );
 }

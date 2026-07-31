@@ -170,6 +170,17 @@ tbody tr:hover:not(.detail-row) { background: #fbfaf6; }
 .setup-panel svg { color: var(--amber); }
 .setup-panel p { margin-top: 6px; color: var(--muted); font-size: 11px; }
 .ticket-key { color: var(--green); font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-weight: 700; text-decoration: none; }
+.jira-group { overflow: hidden; }
+.jira-detail-row td { background: #f7f6f2; }
+.jira-day-list { padding: 11px 48px 15px; }
+.jira-day-header,
+.jira-day-line { display: grid; grid-template-columns: 92px minmax(210px, 1fr) 68px 68px 68px 120px; gap: 12px; align-items: center; }
+.jira-day-header { padding: 0 0 7px; color: #777972; font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .055em; }
+.jira-day-line { min-height: 44px; border-top: 1px solid #e4e3de; color: var(--muted); font-size: 10px; }
+.jira-day-line strong,
+.jira-day-line small { display: block; }
+.jira-day-line strong { color: var(--ink); font-size: 10px; }
+.jira-day-line small { margin-top: 3px; color: var(--muted); font-size: 8px; }
 .table-empty { min-height: 140px; border-top: 1px solid var(--line); }
 .notice { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; padding: 11px 13px; border: 1px solid #e2c997; border-radius: 8px; color: #74490f; background: var(--amber-soft); font-size: 11px; }
 .two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -232,4 +243,22 @@ tbody tr:hover:not(.detail-row) { background: #fbfaf6; }
   .project-group td:nth-child(6) { display: none; }
   .project-group th, .project-group td { padding-left: 10px; padding-right: 10px; }
   .project-group .project-name { max-width: 145px; }
+  .jira-group th:nth-child(3),
+  .jira-group td:nth-child(3),
+  .jira-group th:nth-child(4),
+  .jira-group td:nth-child(4),
+  .jira-group th:nth-child(5),
+  .jira-group td:nth-child(5) { display: none; }
+  .jira-group table { table-layout: fixed; }
+  .jira-group th,
+  .jira-group td { padding-left: 9px; padding-right: 9px; }
+  .jira-group th:nth-child(1) { width: 96px; }
+  .jira-group th:nth-child(6) { width: 62px; }
+  .jira-group th:nth-child(7) { width: 72px; }
+  .jira-group th:nth-child(8) { width: 34px; }
+  .jira-group th:last-child,
+  .jira-group td:last-child { padding-left: 2px; padding-right: 4px; }
+  .jira-day-list { padding: 10px 14px 13px; min-width: 470px; }
+  .jira-day-header,
+  .jira-day-line { grid-template-columns: 78px minmax(150px, 1fr) 56px 56px 56px 100px; gap: 8px; }
 }
