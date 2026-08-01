@@ -488,7 +488,7 @@ function latestSpanEnd(spans: TimestampSpan[]): string | null {
     const timestamp = Date.parse(end);
     return Number.isFinite(timestamp) ? Math.max(result, timestamp) : result;
   }, Number.NEGATIVE_INFINITY);
-  return Number.isFinite(latest) ? new Date(latest).toISOString() : null;
+  return Number.isFinite(latest) ? new Date(latest - 1).toISOString() : null;
 }
 
 function sessionDateRange(session: SessionSummary): string {
@@ -885,8 +885,8 @@ function Projects({ data }: { data: DashboardResponse }) {
         Date filters include sessions that overlap the selected local days and clip
         Wall-clock, Agent, Execution, and Last activity to that range. Prompts, LLM,
         tools, tokens, and value remain whole-session totals. Session window in the
-        expanded details is first-to-last recorded activity, includes idle gaps, and
-        is not intended for billing.
+        expanded details is the full first-to-last session envelope, includes idle
+        gaps, and is not intended for billing.
       </p>
 
       <div className="group-stack">
@@ -1000,7 +1000,7 @@ function ProjectRow({ project }: { project: TimedProjectSummary }) {
                   <strong>{primaryBranch(session)}</strong>
                   <span>{session.machine}</span>
                   <span
-                    title="Execution excludes idle time; session window is first to last recorded activity and includes idle gaps."
+                    title="Execution excludes idle time; session window is the full first-to-last session envelope and includes idle gaps."
                   >
                     {duration(session.execution_time)} exec · {duration(session.duration)} window
                   </span>
