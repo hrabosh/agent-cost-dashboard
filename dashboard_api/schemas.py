@@ -138,6 +138,12 @@ class WorklogDay(ApiModel):
     branches: list[str]
 
 
+class WorklogSessionDayTiming(ApiModel):
+    date: date
+    activity_spans: list[tuple[str, str]]
+    execution_spans: list[tuple[str, str]]
+
+
 class WorklogSessionTiming(ApiModel):
     uid: str
     machine_id: str
@@ -145,6 +151,7 @@ class WorklogSessionTiming(ApiModel):
     branches: list[str]
     activity_spans: list[tuple[str, str]]
     execution_spans: list[tuple[str, str]]
+    daily: list[WorklogSessionDayTiming] = Field(default_factory=list)
 
 
 class WorklogProject(ApiModel):

@@ -156,6 +156,46 @@ class WorklogStoreTests(unittest.TestCase):
             [["2026-07-31T10:01:00Z", "2026-07-31T10:15:20Z"]],
         )
 
+    def test_session_timing_splits_at_local_midnight(self):
+        session = self.session(
+            "cross-midnight",
+            "2026-07-31T21:50:00Z",
+            "2026-07-31T22:10:00Z",
+        )
+        session["execution_spans"] = [
+            ["2026-07-31T21:55:00Z", "2026-07-31T22:05:00Z"]
+        ]
+        self.store.upsert_sessions("laptop", [session])
+
+        report = self.store.report(
+            date(2026, 7, 31), date(2026, 8, 1), "Europe/Prague"
+        )
+        timing = report[0]["session_timings"][0]
+
+        self.assertEqual(
+            timing["daily"],
+            [
+                {
+                    "date": "2026-07-31",
+                    "activity_spans": [
+                        ["2026-07-31T21:50:00Z", "2026-07-31T22:00:00Z"]
+                    ],
+                    "execution_spans": [
+                        ["2026-07-31T21:55:00Z", "2026-07-31T22:00:00Z"]
+                    ],
+                },
+                {
+                    "date": "2026-08-01",
+                    "activity_spans": [
+                        ["2026-07-31T22:00:00Z", "2026-07-31T22:10:00Z"]
+                    ],
+                    "execution_spans": [
+                        ["2026-07-31T22:00:00Z", "2026-07-31T22:05:00Z"]
+                    ],
+                },
+            ],
+        )
+
     def test_synced_statistics_populate_dashboard_aggregates(self):
         session = self.session(
             "one", "2026-07-15T10:00:00Z", "2026-07-15T11:00:00Z"
