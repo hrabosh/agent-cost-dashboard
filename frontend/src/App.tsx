@@ -388,6 +388,7 @@ function normalizedProjectKey(value: string): string {
 }
 
 type TimestampSpan = [string, string];
+type SessionTiming = DashboardResponse["worklogs"][number]["session_timings"][number];
 
 function mergedSpanSeconds(spans: TimestampSpan[]): number {
   const ordered = spans
@@ -414,11 +415,95 @@ function mergedSpanSeconds(spans: TimestampSpan[]): number {
   return (total + currentEnd - currentStart) / 1000;
 }
 
+function timingKey(agent: string, uid: string): string {
+  return JSON.stringify([agent, uid]);
+}
+
+function dateMatchesRange(date: string, dateFrom: string, dateTo: string): boolean {
+  return (!dateFrom || date >= dateFrom) && (!dateTo || date <= dateTo);
+}
+
+function projectTimingMap(
+  project: ProjectSummary,
+  worklogs: DashboardResponse["worklogs"],
+): Map<string, SessionTiming> {
+  const identity = normalizedProjectKey(project.name);
+  const timings = new Map<string, SessionTiming>();
+  worklogs
+    .filter(
+      (worklog) =>
+        normalizedProjectKey(worklog.project_name) === identity ||
+        normalizedProjectKey(worklog.project_key) === identity,
+    )
+    .flatMap((worklog) => worklog.session_timings)
+    .forEach((timing) => timings.set(timingKey(timing.agent, timing.uid), timing));
+  return timings;
+}
+
+function scopedTimingSpans(
+  timing: SessionTiming,
+  dateFrom: string,
+  dateTo: string,
+): { activitySpans: TimestampSpan[]; executionSpans: TimestampSpan[] } | null {
+  if (!dateFrom && !dateTo) {
+    return {
+      activitySpans: timing.activity_spans,
+      executionSpans: timing.execution_spans,
+    };
+  }
+  if (!timing.daily.length) return null;
+  const days = timing.daily.filter((day) =>
+    dateMatchesRange(day.date, dateFrom, dateTo),
+  );
+  return {
+    activitySpans: days.flatMap((day) => day.activity_spans),
+    executionSpans: days.flatMap((day) => day.execution_spans),
+  };
+}
+
+function localDate(value: string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function sessionOverlapsDateRange(
+  session: SessionSummary,
+  dateFrom: string,
+  dateTo: string,
+): boolean {
+  if (!dateFrom && !dateTo) return true;
+  const startDay = localDate(session.start || session.end);
+  const endDay = localDate(session.end || session.start);
+  if (!startDay || !endDay) return false;
+  return (!dateFrom || endDay >= dateFrom) && (!dateTo || startDay <= dateTo);
+}
+
+function latestSpanEnd(spans: TimestampSpan[]): string | null {
+  const latest = spans.reduce((result, [, end]) => {
+    const timestamp = Date.parse(end);
+    return Number.isFinite(timestamp) ? Math.max(result, timestamp) : result;
+  }, Number.NEGATIVE_INFINITY);
+  return Number.isFinite(latest) ? new Date(latest - 1).toISOString() : null;
+}
+
+function sessionDateRange(session: SessionSummary): string {
+  const start = session.start ? shortDate(session.start) : "";
+  const end = session.end ? shortDate(session.end) : "";
+  if (start && end && start !== end) return `${start} → ${end}`;
+  return end || start || "No activity";
+}
+
 function attachProjectTiming(
   project: ProjectSummary,
   worklogs: DashboardResponse["worklogs"],
+  dateFrom: string,
+  dateTo: string,
 ): TimedProjectSummary {
-  const identity = normalizedProjectKey(project.name);
   const selectedSessions = project.session_items;
   if (
     !selectedSessions.length ||
@@ -432,48 +517,49 @@ function attachProjectTiming(
     };
   }
 
-  const selectedKeys = new Set(
-    selectedSessions.map((session) =>
-      JSON.stringify([project.agent, session.uid]),
-    ),
-  );
-  const timings = new Map<
-    string,
-    DashboardResponse["worklogs"][number]["session_timings"][number]
-  >();
-  worklogs
-    .filter(
-      (worklog) =>
-        normalizedProjectKey(worklog.project_name) === identity ||
-        normalizedProjectKey(worklog.project_key) === identity,
-    )
-    .flatMap((worklog) => worklog.session_timings)
-    .forEach((timing) => {
-      const key = JSON.stringify([timing.agent, timing.uid]);
-      if (selectedKeys.has(key)) timings.set(key, timing);
-    });
-
-  if (timings.size !== selectedKeys.size) {
-    return {
-      ...project,
-      wall_time: null,
-      agent_time: null,
-      accounted_execution_time: null,
-    };
+  const timings = projectTimingMap(project, worklogs);
+  const selectedTimings: SessionTiming[] = [];
+  for (const session of selectedSessions) {
+    const timing = timings.get(timingKey(project.agent, session.uid));
+    if (!timing) {
+      return {
+        ...project,
+        wall_time: null,
+        agent_time: null,
+        accounted_execution_time: null,
+      };
+    }
+    selectedTimings.push(timing);
   }
 
-  const selectedTimings = [...timings.values()];
+  const scopedTimings: Array<{
+    activitySpans: TimestampSpan[];
+    executionSpans: TimestampSpan[];
+  }> = [];
+  for (const timing of selectedTimings) {
+    const scoped = scopedTimingSpans(timing, dateFrom, dateTo);
+    if (!scoped) {
+      return {
+        ...project,
+        wall_time: null,
+        agent_time: null,
+        accounted_execution_time: null,
+      };
+    }
+    scopedTimings.push(scoped);
+  }
+
+  const activitySpans = scopedTimings.flatMap((timing) => timing.activitySpans);
   return {
     ...project,
-    wall_time: mergedSpanSeconds(
-      selectedTimings.flatMap((timing) => timing.activity_spans),
-    ),
-    agent_time: selectedTimings.reduce(
-      (total, timing) => total + mergedSpanSeconds(timing.activity_spans),
+    last_activity: latestSpanEnd(activitySpans) ?? project.last_activity,
+    wall_time: mergedSpanSeconds(activitySpans),
+    agent_time: scopedTimings.reduce(
+      (total, timing) => total + mergedSpanSeconds(timing.activitySpans),
       0,
     ),
-    accounted_execution_time: selectedTimings.reduce(
-      (total, timing) => total + mergedSpanSeconds(timing.execution_spans),
+    accounted_execution_time: scopedTimings.reduce(
+      (total, timing) => total + mergedSpanSeconds(timing.executionSpans),
       0,
     ),
   };
@@ -486,7 +572,7 @@ function summarizeProjectSessions(
   const sum = (field: keyof SessionSummary) =>
     sessions.reduce((total, session) => total + Number(session[field] || 0), 0);
   const activity = sessions
-    .map((session) => session.start || session.end)
+    .map((session) => session.end || session.start)
     .filter((value): value is string => Boolean(value))
     .sort()
     .at(-1);
@@ -552,13 +638,24 @@ function Projects({ data }: { data: DashboardResponse }) {
           ) {
             return null;
           }
+          const timings = projectTimingMap(project, data.worklogs);
           const sessions = project.session_items.filter((session) => {
-            const startDay = session.start?.slice(0, 10) || "";
+            const timing = timings.get(timingKey(project.agent, session.uid));
+            const matchesDate =
+              !dateFrom && !dateTo
+                ? true
+                : timing?.daily.length
+                  ? timing.daily.some(
+                      (day) =>
+                        dateMatchesRange(day.date, dateFrom, dateTo) &&
+                        (day.activity_spans.length > 0 ||
+                          day.execution_spans.length > 0),
+                    )
+                  : sessionOverlapsDateRange(session, dateFrom, dateTo);
             return (
               (machine === "all" || session.machine === machine) &&
               (branch === "all" || primaryBranch(session) === branch) &&
-              (!dateFrom || (startDay && startDay >= dateFrom)) &&
-              (!dateTo || (startDay && startDay <= dateTo))
+              matchesDate
             );
           });
           if (hasSessionFilters && sessions.length === 0) return null;
@@ -640,10 +737,10 @@ function Projects({ data }: { data: DashboardResponse }) {
       groups.map((item) => ({
         ...item,
         projects: item.projects.map((project) =>
-          attachProjectTiming(project, data.worklogs),
+          attachProjectTiming(project, data.worklogs, dateFrom, dateTo),
         ),
       })),
-    [data.worklogs, groups],
+    [data.worklogs, dateFrom, dateTo, groups],
   );
   const visibleSessions = filtered.reduce(
     (total, project) => total + project.sessions,
@@ -785,9 +882,11 @@ function Projects({ data }: { data: DashboardResponse }) {
       </div>
 
       <p className="project-time-note">
-        Wall-clock, agent, and execution are rebuilt from the exact synced sessions
-        visible in each row. LLM and tool time follow the same session selection; a
-        dash means exact synced spans are unavailable.
+        Date filters include sessions that overlap the selected local days and clip
+        Wall-clock, Agent, Execution, and Last activity to that range. Prompts, LLM,
+        tools, tokens, and value remain whole-session totals. Session window in the
+        expanded details is the full first-to-last session envelope, includes idle
+        gaps, and is not intended for billing.
       </p>
 
       <div className="group-stack">
@@ -897,10 +996,14 @@ function ProjectRow({ project }: { project: TimedProjectSummary }) {
               </div>
               {latestSessions.map((session) => (
                 <div className="session-line" key={session.uid}>
-                  <span>{shortDate(session.start)}</span>
+                  <span>{sessionDateRange(session)}</span>
                   <strong>{primaryBranch(session)}</strong>
                   <span>{session.machine}</span>
-                  <span>{duration(session.execution_time)}</span>
+                  <span
+                    title="Execution excludes idle time; session window is the full first-to-last session envelope and includes idle gaps."
+                  >
+                    {duration(session.execution_time)} exec · {duration(session.duration)} window
+                  </span>
                   <span>{money(session.cost)}</span>
                 </div>
               ))}

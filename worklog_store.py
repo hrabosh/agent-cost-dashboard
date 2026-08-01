@@ -302,6 +302,10 @@ class WorklogStore:
                     session_execution_spans.append((span_start, span_end))
                     execution_by_worker[key][worker].append((span_start, span_end))
             if session_activity_spans:
+                merged_activity_spans = merge_spans(session_activity_spans)
+                merged_execution_spans = merge_spans(session_execution_spans)
+                activity_by_day = split_spans_into_days(merged_activity_spans, tz)
+                execution_by_day = split_spans_into_days(merged_execution_spans, tz)
                 session_timings[key].append(
                     {
                         "uid": f'{row["machine_id"]}:{row["session_uid"]}',
@@ -310,11 +314,25 @@ class WorklogStore:
                         "branches": sorted(row_branches),
                         "activity_spans": [
                             [utc_iso(start), utc_iso(end)]
-                            for start, end in merge_spans(session_activity_spans)
+                            for start, end in merged_activity_spans
                         ],
                         "execution_spans": [
                             [utc_iso(start), utc_iso(end)]
-                            for start, end in merge_spans(session_execution_spans)
+                            for start, end in merged_execution_spans
+                        ],
+                        "daily": [
+                            {
+                                "date": day,
+                                "activity_spans": [
+                                    [utc_iso(start), utc_iso(end)]
+                                    for start, end in activity_by_day.get(day, [])
+                                ],
+                                "execution_spans": [
+                                    [utc_iso(start), utc_iso(end)]
+                                    for start, end in execution_by_day.get(day, [])
+                                ],
+                            }
+                            for day in sorted(activity_by_day.keys() | execution_by_day.keys())
                         ],
                     }
                 )
@@ -382,6 +400,24 @@ class WorklogStore:
                 }
             )
         return sorted(result, key=lambda item: (-item["seconds"], item["project_name"]))
+
+
+def split_spans_into_days(
+    spans: Iterable[tuple[datetime, datetime]], tz: ZoneInfo
+) -> dict[str, list[tuple[datetime, datetime]]]:
+    """Split UTC spans at local midnight while preserving exact boundaries."""
+    daily: dict[str, list[tuple[datetime, datetime]]] = defaultdict(list)
+    for span_start, span_end in spans:
+        cursor = span_start
+        while cursor < span_end:
+            local_cursor = cursor.astimezone(tz)
+            next_day = datetime.combine(
+                local_cursor.date() + timedelta(days=1), time.min, tzinfo=tz
+            ).astimezone(timezone.utc)
+            segment_end = min(span_end, next_day)
+            daily[local_cursor.date().isoformat()].append((cursor, segment_end))
+            cursor = segment_end
+    return {day: merge_spans(day_spans) for day, day_spans in daily.items()}
 
 
 def split_spans_by_day(
