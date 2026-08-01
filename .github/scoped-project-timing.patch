@@ -1,0 +1,340 @@
+diff --git a/worklog_store.py b/worklog_store.py
+index 4f80905..0000000 100644
+--- a/worklog_store.py
++++ b/worklog_store.py
+@@ -263,6 +263,7 @@ class WorklogStore:
+         branches_by_day: dict[str, dict[str, set[str]]] = defaultdict(
+             lambda: defaultdict(set)
+         )
++        session_timings: dict[str, list[dict]] = defaultdict(list)
+         sessions: dict[str, set[str]] = defaultdict(set)
+         prompts_by_project: dict[str, dict[str, int]] = defaultdict(
+             lambda: defaultdict(int)
+@@ -286,6 +287,7 @@ class WorklogStore:
+                     )
+                     machines_by_day[key][day].add(row["machine_id"])
+                     branches_by_day[key][day].update(row_branches)
++            session_activity_spans: list[tuple[datetime, datetime]] = []
+             for raw_start, raw_end in json.loads(row["activity_spans"]):
+                 span_start = max(parse_iso(raw_start), start_utc)
+                 span_end = min(parse_iso(raw_end), end_utc)
+                 if span_end > span_start:
++                    session_activity_spans.append((span_start, span_end))
+                     spans_by_project[key].append((span_start, span_end))
+                     spans_by_worker[key][worker].append((span_start, span_end))
+                     machines[key].add(row["machine_id"])
+@@ -294,11 +296,30 @@ class WorklogStore:
+                         branches_by_day[key][day].update(row_branches)
+                     sessions[key].add(f'{row["machine_id"]}:{row["session_uid"]}')
++            session_execution_spans: list[tuple[datetime, datetime]] = []
+             for raw_start, raw_end in json.loads(row["execution_spans"] or "[]"):
+                 span_start = max(parse_iso(raw_start), start_utc)
+                 span_end = min(parse_iso(raw_end), end_utc)
+                 if span_end > span_start:
++                    session_execution_spans.append((span_start, span_end))
+                     execution_by_worker[key][worker].append((span_start, span_end))
++            if session_activity_spans:
++                session_timings[key].append(
++                    {
++                        "uid": f'{row["machine_id"]}:{row["session_uid"]}',
++                        "machine_id": row["machine_id"],
++                        "agent": row["agent"],
++                        "branches": sorted(row_branches),
++                        "activity_spans": [
++                            [utc_iso(start), utc_iso(end)]
++                            for start, end in merge_spans(session_activity_spans)
++                        ],
++                        "execution_spans": [
++                            [utc_iso(start), utc_iso(end)]
++                            for start, end in merge_spans(session_execution_spans)
++                        ],
++                    }
++                )
+ 
+         result = []
+         for key, spans in spans_by_project.items():
+@@ -343,6 +364,7 @@ class WorklogStore:
+                     "machine_ids": sorted(machines[key]),
+                     "branches": sorted(branches[key]),
+                     "sessions": len(sessions[key]),
++                    "session_timings": session_timings[key],
+                     "daily": [
+                         {
+                             "date": day,
+diff --git a/dashboard_api/schemas.py b/dashboard_api/schemas.py
+index 0066dfd..0000000 100644
+--- a/dashboard_api/schemas.py
++++ b/dashboard_api/schemas.py
+@@ -133,6 +133,15 @@ class WorklogDay(ApiModel):
+     branches: list[str]
+ 
+ 
++class WorklogSessionTiming(ApiModel):
++    uid: str
++    machine_id: str
++    agent: str
++    branches: list[str]
++    activity_spans: list[tuple[str, str]]
++    execution_spans: list[tuple[str, str]]
++
++
+ class WorklogProject(ApiModel):
+     project_key: str
+     project_name: str
+@@ -150,6 +159,7 @@ class WorklogProject(ApiModel):
+     machine_ids: list[str]
+     branches: list[str]
+     sessions: int
++    session_timings: list[WorklogSessionTiming]
+     daily: list[WorklogDay]
+ 
+ 
+diff --git a/frontend/src/types.ts b/frontend/src/types.ts
+index 79e3a52..0000000 100644
+--- a/frontend/src/types.ts
++++ b/frontend/src/types.ts
+@@ -105,6 +105,15 @@ export interface WorklogDay {
+   branches: string[];
+ }
+ 
++export interface WorklogSessionTiming {
++  uid: string;
++  machine_id: string;
++  agent: string;
++  branches: string[];
++  activity_spans: Array<[string, string]>;
++  execution_spans: Array<[string, string]>;
++}
++
+ export interface WorklogProject {
+   project_key: string;
+   project_name: string;
+@@ -122,6 +131,7 @@ export interface WorklogProject {
+   machine_ids: string[];
+   branches: string[];
+   sessions: number;
++  session_timings: WorklogSessionTiming[];
+   daily: WorklogDay[];
+ }
+ 
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index 84e6969..0000000 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -385,65 +385,83 @@ function normalizedProjectKey(value: string): string {
+   return value.replaceAll("\\", "/").replace(/\/$/, "");
+ }
+ 
++type TimestampSpan = [string, string];
++
++function mergedSpanSeconds(spans: TimestampSpan[]): number {
++  const ordered = spans
++    .map(([start, end]) => [Date.parse(start), Date.parse(end)] as const)
++    .filter(
++      ([start, end]) =>
++        Number.isFinite(start) && Number.isFinite(end) && end > start,
++    )
++    .sort(([left], [right]) => left - right);
++  if (!ordered.length) return 0;
++
++  let [currentStart, currentEnd] = ordered[0];
++  let total = 0;
++  ordered.slice(1).forEach(([start, end]) => {
++    if (start <= currentEnd) {
++      currentEnd = Math.max(currentEnd, end);
++      return;
++    }
++    total += currentEnd - currentStart;
++    currentStart = start;
++    currentEnd = end;
++  });
++  return (total + currentEnd - currentStart) / 1000;
++}
++
+ function attachProjectTiming(
+   project: ProjectSummary,
+   worklogs: DashboardResponse["worklogs"],
+-  filters: {
+-    dateFrom: string;
+-    dateTo: string;
+-    branch: string;
+-    machine: string;
+-  },
+ ): TimedProjectSummary {
+   const identity = normalizedProjectKey(project.name);
+-  const matchingDays = worklogs
++  const selectedSessions = project.session_items;
++  if (
++    !selectedSessions.length ||
++    selectedSessions.some((session) => !session.is_synced)
++  ) {
++    return {
++      ...project,
++      wall_time: null,
++      agent_time: null,
++      accounted_execution_time: null,
++    };
++  }
++
++  const selectedKeys = new Set(
++    selectedSessions.map((session) => `${project.agent}\u0000${session.uid}`),
++  );
++  const timings = new Map<
++    string,
++    DashboardResponse["worklogs"][number]["session_timings"][number]
++  >();
++  worklogs
+     .filter(
+       (worklog) =>
+         normalizedProjectKey(worklog.project_name) === identity ||
+         normalizedProjectKey(worklog.project_key) === identity,
+     )
+-    .flatMap((worklog) =>
+-      worklog.daily.filter((day) => {
+-        const branchMatches =
+-          filters.branch === "all" ||
+-          (filters.branch === "No branch"
+-            ? day.branches.length === 0
+-            : day.branches.includes(filters.branch));
+-        const machineMatches =
+-          filters.machine === "all" ||
+-          (filters.machine === "Unknown device"
+-            ? day.machine_ids.length === 0
+-            : day.machine_ids.includes(filters.machine));
+-        return (
+-          (!filters.dateFrom || day.date >= filters.dateFrom) &&
+-          (!filters.dateTo || day.date <= filters.dateTo) &&
+-          branchMatches &&
+-          machineMatches
+-        );
+-      }),
+-    );
+-  if (!matchingDays.length) {
++    .flatMap((worklog) => worklog.session_timings)
++    .forEach((timing) => {
++      const key = `${timing.agent}\u0000${timing.uid}`;
++      if (selectedKeys.has(key)) timings.set(key, timing);
++    });
++
++  if (timings.size !== selectedKeys.size) {
+     return {
+       ...project,
+       wall_time: null,
+@@ -452,15 +470,16 @@ function attachProjectTiming(
+       accounted_execution_time: null,
+     };
+   }
++
++  const selectedTimings = [...timings.values()];
+   return {
+     ...project,
+-    wall_time: matchingDays.reduce((total, day) => total + day.seconds, 0),
+-    agent_time: matchingDays.reduce(
+-      (total, day) => total + day.agent_seconds,
++    wall_time: mergedSpanSeconds(
++      selectedTimings.flatMap((timing) => timing.activity_spans),
+     ),
+-    accounted_execution_time: matchingDays.reduce(
+-      (total, day) => total + day.execution_seconds,
++    agent_time: selectedTimings.reduce(
++      (total, timing) => total + mergedSpanSeconds(timing.activity_spans),
++      0,
++    ),
++    accounted_execution_time: selectedTimings.reduce(
++      (total, timing) => total + mergedSpanSeconds(timing.execution_spans),
+       0,
+     ),
+   };
+@@ -605,28 +624,12 @@ function Projects({ data }: { data: DashboardResponse }) {
+       groups.map((item) => ({
+         ...item,
+         projects: item.projects.map((project) =>
+-          attachProjectTiming(project, data.worklogs, {
+-            dateFrom,
+-            dateTo,
+-            branch:
+-              branch !== "all"
+-                ? branch
+-                : group === "branch"
+-                  ? item.label
+-                  : "all",
+-            machine:
+-              machine !== "all"
+-                ? machine
+-                : group === "machine"
+-                  ? item.label
+-                  : "all",
+-          }),
++          attachProjectTiming(project, data.worklogs),
+         ),
+       })),
+-    [branch, data.worklogs, dateFrom, dateTo, group, groups, machine],
++    [data.worklogs, groups],
+   );
+@@ -765,10 +768,9 @@ function Projects({ data }: { data: DashboardResponse }) {
+       </div>
+ 
+       <p className="project-time-note">
+-        Wall-clock, agent, and execution use synced project-day worklogs for the
+-        selected date, branch, and device scope. LLM and tool time follow the visible
+-        sessions. Branch/device matching selects complete project-day records; a dash
+-        means no matching synced worklog is available.
++        Wall-clock, agent, and execution are rebuilt from the exact synced sessions
++        visible in each row. LLM and tool time follow the same session selection; a
++        dash means exact synced spans are unavailable.
+       </p>
+ 
+       <div className="group-stack">
+diff --git a/tests/test_worklog_store.py b/tests/test_worklog_store.py
+index b37e193..0000000 100644
+--- a/tests/test_worklog_store.py
++++ b/tests/test_worklog_store.py
+@@ -112,6 +112,47 @@ class WorklogStoreTests(unittest.TestCase):
+         self.assertEqual(report[0]["seconds"], 538)
+         self.assertEqual(report[0]["execution_seconds"], 335)
+ 
++    def test_report_preserves_session_timing_scope(self):
++        desktop = self.session(
++            "desktop-session",
++            "2026-07-31T08:00:00Z",
++            "2026-07-31T09:58:49Z",
++        )
++        desktop["branches"] = ["PORTAL-9000"]
++        desktop["execution_spans"] = [
++            ["2026-07-31T08:10:00Z", "2026-07-31T09:09:00Z"]
++        ]
++        laptop = self.session(
++            "laptop-session",
++            "2026-07-31T10:00:00Z",
++            "2026-07-31T10:18:26Z",
++        )
++        laptop["branches"] = ["PORTAL-9104"]
++        laptop["execution_spans"] = [
++            ["2026-07-31T10:01:00Z", "2026-07-31T10:15:20Z"]
++        ]
++        self.store.upsert_sessions("desktop", [desktop])
++        self.store.upsert_sessions("laptop", [laptop])
++
++        report = self.store.report(
++            date(2026, 7, 31), date(2026, 7, 31), "UTC"
++        )
++        timings = {item["uid"]: item for item in report[0]["session_timings"]}
++
++        self.assertEqual(
++            timings["desktop:desktop-session"]["branches"], ["PORTAL-9000"]
++        )
++        self.assertEqual(
++            timings["laptop:laptop-session"]["branches"], ["PORTAL-9104"]
++        )
++        self.assertEqual(
++            timings["desktop:desktop-session"]["activity_spans"],
++            [["2026-07-31T08:00:00Z", "2026-07-31T09:58:49Z"]],
++        )
++        self.assertEqual(
++            timings["laptop:laptop-session"]["execution_spans"],
++            [["2026-07-31T10:01:00Z", "2026-07-31T10:15:20Z"]],
++        )
++
+     def test_synced_statistics_populate_dashboard_aggregates(self):
+         session = self.session(
+             "one", "2026-07-15T10:00:00Z", "2026-07-15T11:00:00Z"
