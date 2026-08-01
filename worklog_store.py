@@ -258,6 +258,7 @@ class WorklogStore:
         branches_by_day: dict[str, dict[str, set[str]]] = defaultdict(
             lambda: defaultdict(set)
         )
+        session_timings: dict[str, list[dict]] = defaultdict(list)
         sessions: dict[str, set[str]] = defaultdict(set)
         prompts_by_project: dict[str, dict[str, int]] = defaultdict(
             lambda: defaultdict(int)
@@ -280,10 +281,12 @@ class WorklogStore:
                     )
                     machines_by_day[key][day].add(row["machine_id"])
                     branches_by_day[key][day].update(row_branches)
+            session_activity_spans: list[tuple[datetime, datetime]] = []
             for raw_start, raw_end in json.loads(row["activity_spans"]):
                 span_start = max(parse_iso(raw_start), start_utc)
                 span_end = min(parse_iso(raw_end), end_utc)
                 if span_end > span_start:
+                    session_activity_spans.append((span_start, span_end))
                     spans_by_project[key].append((span_start, span_end))
                     spans_by_worker[key][worker].append((span_start, span_end))
                     machines[key].add(row["machine_id"])
@@ -291,11 +294,30 @@ class WorklogStore:
                         machines_by_day[key][day].add(row["machine_id"])
                         branches_by_day[key][day].update(row_branches)
                     sessions[key].add(f'{row["machine_id"]}:{row["session_uid"]}')
+            session_execution_spans: list[tuple[datetime, datetime]] = []
             for raw_start, raw_end in json.loads(row["execution_spans"] or "[]"):
                 span_start = max(parse_iso(raw_start), start_utc)
                 span_end = min(parse_iso(raw_end), end_utc)
                 if span_end > span_start:
+                    session_execution_spans.append((span_start, span_end))
                     execution_by_worker[key][worker].append((span_start, span_end))
+            if session_activity_spans:
+                session_timings[key].append(
+                    {
+                        "uid": f'{row["machine_id"]}:{row["session_uid"]}',
+                        "machine_id": row["machine_id"],
+                        "agent": row["agent"],
+                        "branches": sorted(row_branches),
+                        "activity_spans": [
+                            [utc_iso(start), utc_iso(end)]
+                            for start, end in merge_spans(session_activity_spans)
+                        ],
+                        "execution_spans": [
+                            [utc_iso(start), utc_iso(end)]
+                            for start, end in merge_spans(session_execution_spans)
+                        ],
+                    }
+                )
 
         result = []
         for key, spans in spans_by_project.items():
@@ -332,6 +354,7 @@ class WorklogStore:
                     "machine_ids": sorted(machines[key]),
                     "branches": sorted(branches[key]),
                     "sessions": len(sessions[key]),
+                    "session_timings": session_timings[key],
                     "daily": [
                         {
                             "date": day,

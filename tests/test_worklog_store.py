@@ -114,6 +114,48 @@ class WorklogStoreTests(unittest.TestCase):
         self.assertEqual(report[0]["seconds"], 538)
         self.assertEqual(report[0]["execution_seconds"], 335)
 
+    def test_report_preserves_session_timing_scope(self):
+        desktop = self.session(
+            "desktop-session",
+            "2026-07-31T08:00:00Z",
+            "2026-07-31T09:58:49Z",
+        )
+        desktop["branches"] = ["PORTAL-9000"]
+        desktop["execution_spans"] = [
+            ["2026-07-31T08:10:00Z", "2026-07-31T09:09:00Z"]
+        ]
+        laptop = self.session(
+            "laptop-session",
+            "2026-07-31T10:00:00Z",
+            "2026-07-31T10:18:26Z",
+        )
+        laptop["branches"] = ["PORTAL-9104"]
+        laptop["execution_spans"] = [
+            ["2026-07-31T10:01:00Z", "2026-07-31T10:15:20Z"]
+        ]
+        self.store.upsert_sessions("desktop", [desktop])
+        self.store.upsert_sessions("laptop", [laptop])
+
+        report = self.store.report(
+            date(2026, 7, 31), date(2026, 7, 31), "UTC"
+        )
+        timings = {item["uid"]: item for item in report[0]["session_timings"]}
+
+        self.assertEqual(
+            timings["desktop:desktop-session"]["branches"], ["PORTAL-9000"]
+        )
+        self.assertEqual(
+            timings["laptop:laptop-session"]["branches"], ["PORTAL-9104"]
+        )
+        self.assertEqual(
+            timings["desktop:desktop-session"]["activity_spans"],
+            [["2026-07-31T08:00:00Z", "2026-07-31T09:58:49Z"]],
+        )
+        self.assertEqual(
+            timings["laptop:laptop-session"]["execution_spans"],
+            [["2026-07-31T10:01:00Z", "2026-07-31T10:15:20Z"]],
+        )
+
     def test_synced_statistics_populate_dashboard_aggregates(self):
         session = self.session(
             "one", "2026-07-15T10:00:00Z", "2026-07-15T11:00:00Z"
