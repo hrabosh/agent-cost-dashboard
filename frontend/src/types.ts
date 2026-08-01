@@ -116,6 +116,15 @@ export interface WorklogDay {
   branches: string[];
 }
 
+export interface WorklogSessionTiming {
+  uid: string;
+  machine_id: string;
+  agent: string;
+  branches: string[];
+  activity_spans: Array<[string, string]>;
+  execution_spans: Array<[string, string]>;
+}
+
 export interface WorklogProject {
   project_key: string;
   project_name: string;
@@ -130,6 +139,7 @@ export interface WorklogProject {
   machine_ids: string[];
   branches: string[];
   sessions: number;
+  session_timings: WorklogSessionTiming[];
   daily: WorklogDay[];
 }
 

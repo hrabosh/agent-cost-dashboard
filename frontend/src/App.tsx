@@ -387,44 +387,43 @@ function normalizedProjectKey(value: string): string {
   return value.replaceAll("\\", "/").replace(/\/$/, "");
 }
 
+type TimestampSpan = [string, string];
+
+function mergedSpanSeconds(spans: TimestampSpan[]): number {
+  const ordered = spans
+    .map(([start, end]) => [Date.parse(start), Date.parse(end)] as const)
+    .filter(
+      ([start, end]) =>
+        Number.isFinite(start) && Number.isFinite(end) && end > start,
+    )
+    .sort(([left], [right]) => left - right);
+  const first = ordered[0];
+  if (!first) return 0;
+
+  let [currentStart, currentEnd] = first;
+  let total = 0;
+  ordered.slice(1).forEach(([start, end]) => {
+    if (start <= currentEnd) {
+      currentEnd = Math.max(currentEnd, end);
+      return;
+    }
+    total += currentEnd - currentStart;
+    currentStart = start;
+    currentEnd = end;
+  });
+  return (total + currentEnd - currentStart) / 1000;
+}
+
 function attachProjectTiming(
   project: ProjectSummary,
   worklogs: DashboardResponse["worklogs"],
-  filters: {
-    dateFrom: string;
-    dateTo: string;
-    branch: string;
-    machine: string;
-  },
 ): TimedProjectSummary {
   const identity = normalizedProjectKey(project.name);
-  const matchingDays = worklogs
-    .filter(
-      (worklog) =>
-        normalizedProjectKey(worklog.project_name) === identity ||
-        normalizedProjectKey(worklog.project_key) === identity,
-    )
-    .flatMap((worklog) =>
-      worklog.daily.filter((day) => {
-        const branchMatches =
-          filters.branch === "all" ||
-          (filters.branch === "No branch"
-            ? day.branches.length === 0
-            : day.branches.includes(filters.branch));
-        const machineMatches =
-          filters.machine === "all" ||
-          (filters.machine === "Unknown device"
-            ? day.machine_ids.length === 0
-            : day.machine_ids.includes(filters.machine));
-        return (
-          (!filters.dateFrom || day.date >= filters.dateFrom) &&
-          (!filters.dateTo || day.date <= filters.dateTo) &&
-          branchMatches &&
-          machineMatches
-        );
-      }),
-    );
-  if (!matchingDays.length) {
+  const selectedSessions = project.session_items;
+  if (
+    !selectedSessions.length ||
+    selectedSessions.some((session) => !session.is_synced)
+  ) {
     return {
       ...project,
       wall_time: null,
@@ -432,15 +431,49 @@ function attachProjectTiming(
       accounted_execution_time: null,
     };
   }
+
+  const selectedKeys = new Set(
+    selectedSessions.map((session) =>
+      JSON.stringify([project.agent, session.uid]),
+    ),
+  );
+  const timings = new Map<
+    string,
+    DashboardResponse["worklogs"][number]["session_timings"][number]
+  >();
+  worklogs
+    .filter(
+      (worklog) =>
+        normalizedProjectKey(worklog.project_name) === identity ||
+        normalizedProjectKey(worklog.project_key) === identity,
+    )
+    .flatMap((worklog) => worklog.session_timings)
+    .forEach((timing) => {
+      const key = JSON.stringify([timing.agent, timing.uid]);
+      if (selectedKeys.has(key)) timings.set(key, timing);
+    });
+
+  if (timings.size !== selectedKeys.size) {
+    return {
+      ...project,
+      wall_time: null,
+      agent_time: null,
+      accounted_execution_time: null,
+    };
+  }
+
+  const selectedTimings = [...timings.values()];
   return {
     ...project,
-    wall_time: matchingDays.reduce((total, day) => total + day.seconds, 0),
-    agent_time: matchingDays.reduce(
-      (total, day) => total + day.agent_seconds,
+    wall_time: mergedSpanSeconds(
+      selectedTimings.flatMap((timing) => timing.activity_spans),
+    ),
+    agent_time: selectedTimings.reduce(
+      (total, timing) => total + mergedSpanSeconds(timing.activity_spans),
       0,
     ),
-    accounted_execution_time: matchingDays.reduce(
-      (total, day) => total + day.execution_seconds,
+    accounted_execution_time: selectedTimings.reduce(
+      (total, timing) => total + mergedSpanSeconds(timing.execution_spans),
       0,
     ),
   };
@@ -607,25 +640,10 @@ function Projects({ data }: { data: DashboardResponse }) {
       groups.map((item) => ({
         ...item,
         projects: item.projects.map((project) =>
-          attachProjectTiming(project, data.worklogs, {
-            dateFrom,
-            dateTo,
-            branch:
-              branch !== "all"
-                ? branch
-                : group === "branch"
-                  ? item.label
-                  : "all",
-            machine:
-              machine !== "all"
-                ? machine
-                : group === "machine"
-                  ? item.label
-                  : "all",
-          }),
+          attachProjectTiming(project, data.worklogs),
         ),
       })),
-    [branch, data.worklogs, dateFrom, dateTo, group, groups, machine],
+    [data.worklogs, groups],
   );
   const visibleSessions = filtered.reduce(
     (total, project) => total + project.sessions,
@@ -767,10 +785,9 @@ function Projects({ data }: { data: DashboardResponse }) {
       </div>
 
       <p className="project-time-note">
-        Wall-clock, agent, and execution use synced project-day worklogs for the
-        selected date, branch, and device scope. LLM and tool time follow the visible
-        sessions. Branch/device matching selects complete project-day records; a dash
-        means no matching synced worklog is available.
+        Wall-clock, agent, and execution are rebuilt from the exact synced sessions
+        visible in each row. LLM and tool time follow the same session selection; a
+        dash means exact synced spans are unavailable.
       </p>
 
       <div className="group-stack">
